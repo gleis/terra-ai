@@ -1,7 +1,8 @@
-<img width="1807" height="1246" alt="terra-ai-ss" src="https://github.com/user-attachments/assets/2e4ffbd4-74fd-4838-a9ef-3cc3c94363ac" />
 # Terra-AI
 
 Terra-AI is an Electron desktop app for exploring Terraform workspaces locally. It renders a dependency graph from `terraform graph`, lets you inspect resources visually, and sends the loaded Terraform context to a local Ollama model for questions and file-edit suggestions.
+
+<img width="1807" height="1246" alt="terra-ai-ss" src="https://github.com/user-attachments/assets/2e4ffbd4-74fd-4838-a9ef-3cc3c94363ac" />
 
 ## What It Does
 
