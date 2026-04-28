@@ -7,6 +7,102 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
 const execAsync = promisify(exec)
+const OLLAMA_STREAM_EVENT = 'ollama:stream-event'
+
+type OllamaTagResponse = {
+  models?: Array<{
+    name?: string
+    model?: string
+    size?: number
+  }>
+}
+
+async function streamOllamaResponse(
+  sender: Electron.WebContents,
+  requestId: string,
+  payload: Record<string, unknown>
+): Promise<void> {
+  const response = await fetch('http://127.0.0.1:11434/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    throw new Error(`Ollama HTTP Error: ${response.status}`)
+  }
+
+  if (!response.body) {
+    throw new Error('Ollama returned no response body')
+  }
+
+  const decoder = new TextDecoder()
+  const reader = response.body.getReader()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+
+      const parsed = JSON.parse(trimmed)
+      const content = parsed.message?.content
+
+      if (content) {
+        sender.send(OLLAMA_STREAM_EVENT, {
+          requestId,
+          type: 'chunk',
+          content
+        })
+      }
+
+      if (parsed.done) {
+        sender.send(OLLAMA_STREAM_EVENT, {
+          requestId,
+          type: 'done'
+        })
+      }
+    }
+
+    if (done) break
+  }
+
+  const trailing = buffer.trim()
+  if (trailing) {
+    const parsed = JSON.parse(trailing)
+    const content = parsed.message?.content
+    if (content) {
+      sender.send(OLLAMA_STREAM_EVENT, {
+        requestId,
+        type: 'chunk',
+        content
+      })
+    }
+    sender.send(OLLAMA_STREAM_EVENT, {
+      requestId,
+      type: 'done'
+    })
+  }
+}
+
+async function fetchOllamaModels(): Promise<string[]> {
+  const response = await fetch('http://127.0.0.1:11434/api/tags')
+
+  if (!response.ok) {
+    throw new Error(`Ollama HTTP Error: ${response.status}`)
+  }
+
+  const data = (await response.json()) as OllamaTagResponse
+  return (data.models || [])
+    .map((model) => model.name || model.model)
+    .filter((name): name is string => Boolean(name))
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -122,19 +218,25 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.handle('ollama:generate', async (_, payload) => {
+  ipcMain.handle('ollama:stream', async (event, payload) => {
     try {
-      // Use Node's built in fetch in the main process to completely bypass CORS 
-      const response = await fetch('http://127.0.0.1:11434/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+      const { requestId, ...ollamaPayload } = payload
+      await streamOllamaResponse(event.sender, requestId, ollamaPayload)
+      return { success: true }
+    } catch (e: any) {
+      event.sender.send(OLLAMA_STREAM_EVENT, {
+        requestId: payload.requestId,
+        type: 'error',
+        error: e.message
       })
-      if (!response.ok) {
-        throw new Error(`Ollama HTTP Error: ${response.status}`)
-      }
-      const data = await response.json()
-      return { success: true, data }
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('ollama:listModels', async () => {
+    try {
+      const models = await fetchOllamaModels()
+      return { success: true, data: models }
     } catch (e: any) {
       return { success: false, error: e.message }
     }

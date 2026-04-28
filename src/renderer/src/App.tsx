@@ -30,6 +30,98 @@ const nodeTypes = {
 
 const MIN_SIDEBAR_WIDTH = 320
 const MAX_SIDEBAR_WIDTH = 720
+const MAX_CONTEXT_CHARS = 12000
+const MAX_FILE_SNIPPET_CHARS = 3000
+
+type ChatRole = 'user' | 'assistant' | 'system'
+type ChatMessage = {
+  id: string
+  role: ChatRole
+  content: string
+}
+
+type ResponseMode = 'brief' | 'normal' | 'detailed'
+type OllamaStatus = 'checking' | 'ready' | 'offline'
+
+const RESPONSE_MODES: Record<ResponseMode, { label: string; maxTokens: number; instruction: string }> = {
+  brief: {
+    label: 'Brief',
+    maxTokens: 220,
+    instruction:
+      'Respond briefly. Use short markdown sections, 3 to 5 bullets, and highlight the single most important action.'
+  },
+  normal: {
+    label: 'Normal',
+    maxTokens: 500,
+    instruction:
+      'Respond with concise markdown sections and bullets. Focus on the direct answer, key risks, and next steps.'
+  },
+  detailed: {
+    label: 'Detailed',
+    maxTokens: 900,
+    instruction:
+      'Respond with a fuller markdown explanation, but stay practical and structured with headings and bullets.'
+  }
+}
+
+function scoreModelSpeed(modelName: string): number {
+  const name = modelName.toLowerCase()
+
+  if (name.includes('0.5b') || name.includes('1b')) return 100
+  if (name.includes('1.5b') || name.includes('2b')) return 90
+  if (name.includes('3b')) return 80
+  if (name.includes('mini') || name.includes('small')) return 75
+  if (name.includes('7b') || name.includes('8b')) return 60
+  if (name.includes('llama3')) return 55
+  if (name.includes('gemma')) return 45
+  if (name.includes('13b') || name.includes('14b')) return 35
+  if (name.includes('32b') || name.includes('34b')) return 20
+
+  return 50
+}
+
+function isPreferredChatModel(modelName: string): boolean {
+  const name = modelName.toLowerCase()
+
+  if (name.includes(':cloud')) return false
+  if (name.includes('llava')) return false
+  if (name.includes('vision')) return false
+  if (name.includes('embed')) return false
+
+  return true
+}
+
+function pickFastestModel(models: string[]): string {
+  if (models.length === 0) return 'llama3'
+
+  const preferredModels = models.filter(isPreferredChatModel)
+  const candidates = preferredModels.length > 0 ? preferredModels : models
+
+  return [...candidates].sort((a, b) => scoreModelSpeed(b) - scoreModelSpeed(a))[0]
+}
+
+function clampWorkspaceContext(rawContext: string): string {
+  const fileSections = rawContext.split(/\n--- /).filter(Boolean)
+  let remaining = MAX_CONTEXT_CHARS
+  const selectedSections: string[] = []
+
+  for (const section of fileSections) {
+    if (remaining <= 0) break
+
+    const normalizedSection = section.startsWith('--- ') ? section : `--- ${section}`
+    const [headerLine = 'unknown', ...contentLines] = normalizedSection.split('\n')
+    const fileHeader = headerLine.trim()
+    const fullContent = contentLines.join('\n').trim()
+    const trimmedContent = fullContent.slice(0, Math.min(MAX_FILE_SNIPPET_CHARS, remaining))
+    const suffix = fullContent.length > trimmedContent.length ? '\n# ... truncated for speed ...' : ''
+    const finalSection = `${fileHeader}\n${trimmedContent}${suffix}\n`
+
+    selectedSections.push(finalSection)
+    remaining -= finalSection.length
+  }
+
+  return selectedSections.join('\n')
+}
 
 function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState([])
@@ -43,8 +135,15 @@ function App() {
   
   // Future state for AI Sidebar
   const [prompt, setPrompt] = useState('')
-  const [messages, setMessages] = useState<{role: 'user' | 'assistant' | 'system', content: string}[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [selectedModel, setSelectedModel] = useState('llama3')
+  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>('checking')
+  const [ollamaError, setOllamaError] = useState<string | null>(null)
+  const [responseMode, setResponseMode] = useState<ResponseMode>('brief')
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const activeRequestIdRef = useRef<string | null>(null)
+  const receivedChunkRef = useRef(false)
 
   // Magic Add Modal State
   const [showAddModal, setShowAddModal] = useState(false)
@@ -58,8 +157,82 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const loadModels = async () => {
+      setOllamaStatus('checking')
+      setOllamaError(null)
+
+      const res = await window.api.listOllamaModels()
+      if (!res.success || !res.data) {
+        setOllamaStatus('offline')
+        setOllamaError(res.error || 'Unable to reach Ollama')
+        return
+      }
+
+      const models = res.data
+      setAvailableModels(models)
+      setSelectedModel((current) => {
+        if (models.includes(current)) return current
+        return pickFastestModel(models)
+      })
+      setOllamaStatus(models.length > 0 ? 'ready' : 'offline')
+      if (models.length === 0) {
+        setOllamaError('No Ollama models are installed.')
+      }
+    }
+
+    void loadModels()
+  }, [])
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages, aiLoading])
+
+  useEffect(() => {
+    const unsubscribe = window.api.onOllamaStreamEvent((event) => {
+      if (!event.requestId || event.requestId !== activeRequestIdRef.current) return
+
+      if (event.type === 'chunk') {
+        receivedChunkRef.current = true
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === event.requestId
+              ? { ...message, content: `${message.content}${event.content || ''}` }
+              : message
+          )
+        )
+        return
+      }
+
+      if (event.type === 'done' && !receivedChunkRef.current) {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === event.requestId
+              ? { ...message, content: 'No response tokens were received from Ollama. Check the selected model and local Ollama logs.' }
+              : message
+          )
+        )
+      }
+
+      if (event.type === 'error') {
+        setOllamaStatus('offline')
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === event.requestId
+              ? { ...message, content: `Error: Ensure Ollama is running locally. ${event.error || 'Unknown error.'}` }
+              : message
+          )
+        )
+      }
+
+      if (event.type === 'done' || event.type === 'error') {
+        setAiLoading(false)
+        activeRequestIdRef.current = null
+        receivedChunkRef.current = false
+      }
+    })
+
+    return unsubscribe
+  }, [])
 
   useEffect(() => {
     const handleMouseMove = (event: MouseEvent) => {
@@ -135,47 +308,70 @@ function App() {
 
   const submitQuery = async (queryText: string) => {
     if (!queryText.trim() || aiLoading) return
-
-    const selectedModel = (document.getElementById('model-select') as HTMLSelectElement).value
+    if (ollamaStatus !== 'ready') return
 
     // Optional: Only read and inject the heavy workspace context if we are at the start of a conversation
-    let systemContext: {role: 'system', content: string}[] = []
+    let systemContext: ChatMessage[] = []
     if (cwd && messages.length === 0) {
       const res = await window.api.readWorkspaceFiles(cwd)
       if (res.success && res.data) {
+        const trimmedContext = clampWorkspaceContext(res.data)
         systemContext.push({
+          id: 'workspace-context',
           role: 'system',
-          content: `You are an expert infrastructure AI analyzing the following Terraform workspace:\n\n${res.data}\n\nIMPORTANT CODE EDITING RULES:\n1. If you propose a code edit, you MUST encapsulate it in a markdown code block AND ensure the very first line of the code block is a continuous comment indicating the target filename relative to the workspace root (e.g. # main.tf or # vpc/main.tf).\n2. You MUST output the ENTIRE contents of the file, including all existing code unchanged. DO NOT omit existing code and DO NOT use placeholder comments. Produce the full file from top to bottom so the system can safely overwrite.`
+          content: `You are an expert infrastructure AI analyzing the following Terraform workspace snapshot:\n\n${trimmedContext}\n\nRESPONSE STYLE:\n- Use markdown with short headings and bullets.\n- Use **bold** for key findings.\n- Use __underlines__ only for warnings or high-risk items.\n- Use ==highlights== for concrete actions.\n- Keep the answer aligned to the selected response mode.\n\nIMPORTANT CODE EDITING RULES:\n1. If you propose a code edit, you MUST encapsulate it in a markdown code block AND ensure the very first line of the code block is a continuous comment indicating the target filename relative to the workspace root (e.g. # main.tf or # vpc/main.tf).\n2. You MUST output the ENTIRE contents of the file, including all existing code unchanged. DO NOT omit existing code and DO NOT use placeholder comments. Produce the full file from top to bottom so the system can safely overwrite.`
         })
       }
     }
 
-    const newUserMsg : {role: 'user' | 'assistant' | 'system', content: string} = { role: 'user', content: queryText }
-    const updatedMessages = [...messages, newUserMsg]
+    systemContext.push({
+      id: 'response-mode',
+      role: 'system',
+      content: RESPONSE_MODES[responseMode].instruction
+    })
+
+    const requestId = `assistant-${Date.now()}`
+    const newUserMsg: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content: queryText }
+    const pendingAssistantMsg: ChatMessage = { id: requestId, role: 'assistant', content: '' }
+    const updatedMessages = [...messages, newUserMsg, pendingAssistantMsg]
     
     // Add optimistic UI message
     setMessages(updatedMessages)
     setPrompt('')
     setAiLoading(true)
+    activeRequestIdRef.current = requestId
+    receivedChunkRef.current = false
 
     try {
-      const res = await window.api.queryOllama({
+      const res = await window.api.streamOllama({
+        requestId,
         model: selectedModel,
-        messages: [...systemContext, ...updatedMessages],
-        stream: false
+        messages: [...systemContext, ...updatedMessages].map(({ role, content }) => ({ role, content })),
+        stream: true,
+        options: {
+          num_predict: RESPONSE_MODES[responseMode].maxTokens,
+          temperature: responseMode === 'detailed' ? 0.4 : 0.2
+        }
       })
 
       if (!res.success) {
         throw new Error(res.error || 'Failed to connect to Ollama')
       }
-
-      const aiResponse = res.data.message?.content || 'I encountered an error replying.'
-      setMessages((prev) => [...prev, { role: 'assistant', content: aiResponse }])
+      setOllamaStatus('ready')
     } catch (err: any) {
       console.error(err)
-      setMessages((prev) => [...prev, { role: 'assistant', content: `Error: Ensure Ollama is running locally. ${err.message}` }])
-    } finally {
+      setOllamaStatus('offline')
+      setOllamaError(err.message)
       setAiLoading(false)
+      activeRequestIdRef.current = null
+      receivedChunkRef.current = false
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === requestId
+            ? { ...message, content: `Error: Ensure Ollama is running locally. ${err.message}` }
+            : message
+        )
+      )
     }
   }
 
@@ -498,20 +694,70 @@ function App() {
                   <span className="inline-block h-2 w-2 rounded-full bg-indigo-400 animate-pulse"></span>
                   Generating insight...
                 </div>
+              ) : ollamaStatus === 'checking' ? (
+                <div className="flex items-center gap-2 text-xs text-slate-400">
+                  <span className="inline-block h-2 w-2 rounded-full bg-slate-500 animate-pulse"></span>
+                  Checking Ollama...
+                </div>
+              ) : ollamaStatus === 'offline' ? (
+                <div className="text-xs text-amber-300">
+                  Ollama unavailable
+                </div>
               ) : (
-                <div className="text-xs text-slate-500">Ready</div>
+                <div className="text-xs text-slate-500">
+                  Ready with {selectedModel}
+                </div>
               )}
             </div>
           </div>
-          <select id="model-select" className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded px-2 py-1 focus:ring-1 focus:ring-indigo-500 outline-none">
-            <option value="gemma4">gemma4</option>
-            <option value="llama3">llama3</option>
-          </select>
+          <div className="flex flex-col gap-2 items-end">
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              disabled={aiLoading || availableModels.length === 0}
+              className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded px-2 py-1 focus:ring-1 focus:ring-indigo-500 outline-none disabled:opacity-60"
+            >
+              {availableModels.length > 0 ? (
+                availableModels
+                  .slice()
+                  .sort((a, b) => {
+                    const preferredDelta = Number(isPreferredChatModel(b)) - Number(isPreferredChatModel(a))
+                    if (preferredDelta !== 0) return preferredDelta
+                    return scoreModelSpeed(b) - scoreModelSpeed(a)
+                  })
+                  .map((model, index) => (
+                    <option key={model} value={model}>
+                      {index === 0 ? `${model} (fastest installed)` : model}
+                    </option>
+                  ))
+              ) : (
+                <option value="llama3">No models found</option>
+              )}
+            </select>
+            <select
+              value={responseMode}
+              onChange={(e) => setResponseMode(e.target.value as ResponseMode)}
+              disabled={aiLoading}
+              className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded px-2 py-1 focus:ring-1 focus:ring-indigo-500 outline-none disabled:opacity-60"
+            >
+              {Object.entries(RESPONSE_MODES).map(([value, mode]) => (
+                <option key={value} value={value}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
+
+        {ollamaError && !aiLoading && (
+          <div className="mx-4 mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+            {ollamaError}
+          </div>
+        )}
         
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map((m, i) => (
-            <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+          {messages.map((m) => (
+            <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
               <span className="text-xs text-slate-500 mb-1">{m.role === 'user' ? 'You' : 'AI'}</span>
               <div 
                 className={`rounded-xl p-3 text-sm flex flex-col items-start w-full shadow-inner ${
@@ -520,7 +766,7 @@ function App() {
                     : 'bg-slate-800 border border-slate-700 text-slate-300'
                 }`}
               >
-                {m.role === 'user' ? <span className="whitespace-pre-wrap leading-7">{m.content}</span> : <div className="w-full">{renderMessageContent(m.content)}</div>}
+                {m.role === 'user' ? <span className="whitespace-pre-wrap leading-7">{m.content}</span> : <div className="w-full">{m.content ? renderMessageContent(m.content) : <span className="text-slate-500">Waiting for first tokens...</span>}</div>}
               </div>
             </div>
           ))}
@@ -548,8 +794,14 @@ function App() {
             type="text" 
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder={aiLoading ? "Generating insight..." : "Ask about your infrastructure..."}
-            disabled={aiLoading}
+            placeholder={
+              aiLoading
+                ? 'Generating insight...'
+                : ollamaStatus === 'ready'
+                  ? 'Ask about your infrastructure...'
+                  : 'Start Ollama and install a model to enable AI insights...'
+            }
+            disabled={aiLoading || ollamaStatus !== 'ready'}
             className="w-full bg-slate-950 border border-slate-700 text-slate-200 text-sm rounded-lg px-3 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-slate-600 disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </form>
