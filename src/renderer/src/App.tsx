@@ -41,23 +41,11 @@ type ChatMessage = {
   content: string
 }
 
-type ResponseMode = 'normal' | 'detailed'
 type OllamaStatus = 'checking' | 'ready' | 'offline'
 
-const RESPONSE_MODES: Record<ResponseMode, { label: string; maxTokens: number; instruction: string }> = {
-  normal: {
-    label: 'Normal',
-    maxTokens: 500,
-    instruction:
-      'Respond with concise markdown sections and bullets. Focus on the direct answer, key risks, and next steps.'
-  },
-  detailed: {
-    label: 'Detailed',
-    maxTokens: 900,
-    instruction:
-      'Respond with a fuller markdown explanation, but stay practical and structured with headings and bullets.'
-  }
-}
+const INSIGHT_RESPONSE_INSTRUCTION =
+  'Respond with practical markdown sections and bullets. Cover the direct answer, security considerations, cost considerations, and concrete next steps. Keep each section concise enough to finish the full response without trailing off.'
+const INSIGHT_MAX_TOKENS = 900
 
 function scoreModelSpeed(modelName: string): number {
   const name = modelName.toLowerCase()
@@ -112,8 +100,10 @@ function pickBackupChatModel(models: string[], currentModel: string): string | n
 function extractOllamaTextResponse(data: any): string {
   if (!data) return ''
   if (typeof data.message?.content === 'string') return data.message.content
+  if (typeof data.message?.thinking === 'string') return data.message.thinking
   if (typeof data.response === 'string') return data.response
   if (typeof data.content === 'string') return data.content
+  if (typeof data.thinking === 'string') return data.thinking
   return ''
 }
 
@@ -157,7 +147,6 @@ function App() {
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>('checking')
   const [ollamaError, setOllamaError] = useState<string | null>(null)
-  const [responseMode, setResponseMode] = useState<ResponseMode>('normal')
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const activeRequestIdRef = useRef<string | null>(null)
   const receivedChunkRef = useRef(false)
@@ -424,7 +413,7 @@ function App() {
         systemContext.push({
           id: 'workspace-context',
           role: 'system',
-          content: `You are an expert infrastructure AI analyzing the following Terraform workspace snapshot:\n\n${trimmedContext}\n\nRESPONSE STYLE:\n- Use markdown with short headings and bullets.\n- Use **bold** for key findings.\n- Use __underlines__ only for warnings or high-risk items.\n- Use ==highlights== for concrete actions.\n- Keep the answer aligned to the selected response mode.\n\nIMPORTANT CODE EDITING RULES:\n1. If you propose a code edit, you MUST encapsulate it in a markdown code block AND ensure the very first line of the code block is a continuous comment indicating the target filename relative to the workspace root (e.g. # main.tf or # vpc/main.tf).\n2. You MUST output the ENTIRE contents of the file, including all existing code unchanged. DO NOT omit existing code and DO NOT use placeholder comments. Produce the full file from top to bottom so the system can safely overwrite.`
+          content: `You are an expert infrastructure AI analyzing the following Terraform workspace snapshot:\n\n${trimmedContext}\n\nRESPONSE STYLE:\n- Use markdown with short headings and bullets.\n- Use **bold** for key findings.\n- Use __underlines__ only for warnings or high-risk items.\n- Use ==highlights== for concrete actions.\n- Finish all major sections without trailing off.\n\nIMPORTANT CODE EDITING RULES:\n1. If you propose a code edit, you MUST encapsulate it in a markdown code block AND ensure the very first line of the code block is a continuous comment indicating the target filename relative to the workspace root (e.g. # main.tf or # vpc/main.tf).\n2. You MUST output the ENTIRE contents of the file, including all existing code unchanged. DO NOT omit existing code and DO NOT use placeholder comments. Produce the full file from top to bottom so the system can safely overwrite.`
         })
       }
     }
@@ -432,7 +421,7 @@ function App() {
     systemContext.push({
       id: 'response-mode',
       role: 'system',
-      content: RESPONSE_MODES[responseMode].instruction
+      content: INSIGHT_RESPONSE_INSTRUCTION
     })
 
     const requestId = `assistant-${Date.now()}`
@@ -457,15 +446,15 @@ function App() {
         model: selectedModel,
         messages: ollamaMessages,
         stream: true,
+        think: false,
         options: {
-          num_predict: RESPONSE_MODES[responseMode].maxTokens,
-          temperature: responseMode === 'detailed' ? 0.4 : 0.2
+          num_predict: INSIGHT_MAX_TOKENS,
+          temperature: 0.3
         }
       }
       console.log(OLLAMA_DEBUG_PREFIX, 'submit:payload', {
         requestId,
         model: selectedModel,
-        responseMode,
         messageCount: ollamaMessages.length,
         lastMessage: ollamaMessages[ollamaMessages.length - 1],
         options: ollamaPayload.options
@@ -858,18 +847,6 @@ function App() {
               ) : (
                 <option value="llama3">No models found</option>
               )}
-            </select>
-            <select
-              value={responseMode}
-              onChange={(e) => setResponseMode(e.target.value as ResponseMode)}
-              disabled={aiLoading}
-              className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded px-2 py-1 focus:ring-1 focus:ring-indigo-500 outline-none disabled:opacity-60"
-            >
-              {Object.entries(RESPONSE_MODES).map(([value, mode]) => (
-                <option key={value} value={value}>
-                  {mode.label}
-                </option>
-              ))}
             </select>
           </div>
         </div>
