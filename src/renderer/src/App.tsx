@@ -46,6 +46,7 @@ type OllamaStatus = 'checking' | 'ready' | 'offline'
 const INSIGHT_RESPONSE_INSTRUCTION =
   'Respond with practical markdown sections and bullets. Cover the direct answer, security considerations, cost considerations, and concrete next steps. Keep each section concise enough to finish the full response without trailing off.'
 const INSIGHT_MAX_TOKENS = 900
+const CONTINUATION_MAX_TOKENS = 700
 
 function scoreModelSpeed(modelName: string): number {
   const name = modelName.toLowerCase()
@@ -153,6 +154,7 @@ function App() {
   const requestPayloadRef = useRef<Record<string, unknown> | null>(null)
   const fallbackRetryRef = useRef(false)
   const truncatedAssistantIdsRef = useRef<Set<string>>(new Set())
+  const activeResponseContentRef = useRef('')
 
   // Magic Add Modal State
   const [showAddModal, setShowAddModal] = useState(false)
@@ -181,6 +183,7 @@ function App() {
       if (event.type === 'chunk') {
         receivedChunkRef.current = true
         fallbackRetryRef.current = false
+        activeResponseContentRef.current = `${activeResponseContentRef.current}${event.content || ''}`
         setMessages((prev) =>
           prev.map((message) =>
             message.id === event.requestId
@@ -281,15 +284,72 @@ function App() {
         )
       }
 
+      if (event.type === 'done' && event.doneReason === 'length' && activeResponseContentRef.current.trim() && requestPayloadRef.current) {
+        truncatedAssistantIdsRef.current.add(event.requestId)
+        void (async () => {
+          let continuationBase = activeResponseContentRef.current
+          let appendedContent = ''
+
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const continuationPayload = {
+              ...requestPayloadRef.current,
+              stream: false,
+              messages: [
+                ...((requestPayloadRef.current?.messages as Array<{ role: string; content: string }>) || []),
+                { role: 'assistant', content: continuationBase },
+                {
+                  role: 'user',
+                  content:
+                    'Continue exactly where you left off. Do not repeat earlier text. Finish the remaining sections and end cleanly.'
+                }
+              ],
+              options: {
+                ...((requestPayloadRef.current?.options as Record<string, unknown>) || {}),
+                num_predict: CONTINUATION_MAX_TOKENS
+              }
+            }
+
+            const continuationRes = await window.api.generateOllama(continuationPayload)
+            console.log(OLLAMA_DEBUG_PREFIX, 'continuation:response', continuationRes)
+
+            if (!continuationRes.success) break
+
+            const continuationText = extractOllamaTextResponse(continuationRes.data)
+            if (!continuationText) break
+
+            appendedContent = `${appendedContent}${continuationText}`
+            continuationBase = `${continuationBase}${continuationText}`
+
+            if (continuationRes.data?.done_reason !== 'length') break
+          }
+
+          if (appendedContent) {
+            activeResponseContentRef.current = `${activeResponseContentRef.current}${appendedContent}`
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === event.requestId
+                  ? { ...message, content: `${message.content}${appendedContent}` }
+                  : message
+              )
+            )
+          }
+
+          setAiLoading(false)
+          activeRequestIdRef.current = null
+          receivedChunkRef.current = false
+          requestPayloadRef.current = null
+          fallbackRetryRef.current = false
+        })()
+        return
+      }
+
       if (event.type === 'done' || event.type === 'error') {
-        if (event.type === 'done' && (event as any).doneReason === 'length' && event.requestId) {
-          truncatedAssistantIdsRef.current.add(event.requestId)
-        }
         setAiLoading(false)
         activeRequestIdRef.current = null
         receivedChunkRef.current = false
         requestPayloadRef.current = null
         fallbackRetryRef.current = false
+        activeResponseContentRef.current = ''
       }
     })
 
@@ -368,6 +428,18 @@ function App() {
     }
   }
 
+  const clearConversation = () => {
+    if (aiLoading) return
+    setMessages([])
+    setPrompt('')
+    activeRequestIdRef.current = null
+    receivedChunkRef.current = false
+    requestPayloadRef.current = null
+    fallbackRetryRef.current = false
+    truncatedAssistantIdsRef.current = new Set()
+    activeResponseContentRef.current = ''
+  }
+
   const refreshOllamaStatus = async (): Promise<boolean> => {
     setOllamaStatus('checking')
     setOllamaError(null)
@@ -440,6 +512,7 @@ function App() {
     setAiLoading(true)
     activeRequestIdRef.current = requestId
     receivedChunkRef.current = false
+    activeResponseContentRef.current = ''
 
     try {
       const ollamaPayload = {
@@ -506,7 +579,7 @@ function App() {
       return chunks.map((chunk, chunkIndex) => {
         if (chunk.startsWith('`') && chunk.endsWith('`')) {
           return (
-            <code key={chunkIndex} className="rounded bg-slate-950/90 px-1.5 py-0.5 font-mono text-[0.8rem] text-emerald-200 ring-1 ring-white/10">
+            <code key={chunkIndex} className="rounded bg-slate-950/90 px-1.5 py-0.5 font-mono text-[0.8rem] text-emerald-200 ring-1 ring-white/10 break-all [overflow-wrap:anywhere]">
               {chunk.slice(1, -1)}
             </code>
           )
@@ -514,7 +587,7 @@ function App() {
 
         if (chunk.startsWith('**') && chunk.endsWith('**')) {
           return (
-            <strong key={chunkIndex} className="font-semibold text-white">
+            <strong key={chunkIndex} className="font-semibold text-white break-words [overflow-wrap:anywhere]">
               {chunk.slice(2, -2)}
             </strong>
           )
@@ -522,7 +595,7 @@ function App() {
 
         if (chunk.startsWith('__') && chunk.endsWith('__')) {
           return (
-            <span key={chunkIndex} className="font-semibold underline decoration-indigo-400 decoration-2 underline-offset-4 text-indigo-100">
+            <span key={chunkIndex} className="font-semibold underline decoration-indigo-400 decoration-2 underline-offset-4 text-indigo-100 break-words [overflow-wrap:anywhere]">
               {chunk.slice(2, -2)}
             </span>
           )
@@ -530,7 +603,7 @@ function App() {
 
         if (chunk.startsWith('==') && chunk.endsWith('==')) {
           return (
-            <mark key={chunkIndex} className="rounded bg-amber-300/20 px-1 text-amber-100">
+            <mark key={chunkIndex} className="rounded bg-amber-300/20 px-1 text-amber-100 break-words [overflow-wrap:anywhere]">
               {chunk.slice(2, -2)}
             </mark>
           )
@@ -558,7 +631,7 @@ function App() {
                   <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-indigo-500/15 text-[11px] font-semibold text-indigo-200">
                     {index + 1}
                   </span>
-                  {renderInlineContent(cleaned)}
+                  <span className="break-words [overflow-wrap:anywhere]">{renderInlineContent(cleaned)}</span>
                 </li>
               )
             })}
@@ -568,7 +641,7 @@ function App() {
 
       if (trimmed.startsWith('### ')) {
         return (
-          <h4 key={key} className="mt-3 mb-2 inline-block border-b border-indigo-400/60 pb-1 text-sm font-semibold uppercase tracking-[0.18em] text-indigo-200">
+          <h4 key={key} className="mt-3 mb-2 block w-full border-b border-indigo-400/60 pb-1 text-sm font-semibold uppercase tracking-[0.18em] text-indigo-200 break-words [overflow-wrap:anywhere]">
             {renderInlineContent(trimmed.slice(4))}
           </h4>
         )
@@ -576,7 +649,7 @@ function App() {
 
       if (trimmed.startsWith('## ')) {
         return (
-          <h3 key={key} className="mt-3 mb-2 inline-block border-b border-emerald-400/60 pb-1 text-base font-semibold text-emerald-200">
+          <h3 key={key} className="mt-3 mb-2 block w-full border-b border-emerald-400/60 pb-1 text-base font-semibold text-emerald-200 break-words [overflow-wrap:anywhere]">
             {renderInlineContent(trimmed.slice(3))}
           </h3>
         )
@@ -584,7 +657,7 @@ function App() {
 
       if (trimmed.startsWith('# ')) {
         return (
-          <h2 key={key} className="mt-3 mb-2 inline-block rounded bg-indigo-500/10 px-2 py-1 text-lg font-semibold text-white ring-1 ring-indigo-400/30">
+          <h2 key={key} className="mt-3 mb-2 block w-full rounded bg-indigo-500/10 px-2 py-1 text-lg font-semibold text-white ring-1 ring-indigo-400/30 break-words [overflow-wrap:anywhere]">
             {renderInlineContent(trimmed.slice(2))}
           </h2>
         )
@@ -594,16 +667,16 @@ function App() {
       if (labelMatch) {
         return (
           <div key={key} className="my-2 w-full rounded-lg border border-amber-400/20 bg-amber-300/10 px-3 py-2">
-            <span className="mr-2 font-semibold text-amber-100 underline decoration-amber-300/70 underline-offset-4">
+            <span className="mr-2 font-semibold text-amber-100 underline decoration-amber-300/70 underline-offset-4 break-words [overflow-wrap:anywhere]">
               {labelMatch[1]}:
             </span>
-            <span className="text-slate-200">{renderInlineContent(labelMatch[2])}</span>
+            <span className="text-slate-200 break-words [overflow-wrap:anywhere]">{renderInlineContent(labelMatch[2])}</span>
           </div>
         )
       }
 
       return (
-        <p key={key} className="my-2 leading-7 text-slate-200">
+        <p key={key} className="my-2 leading-7 text-slate-200 break-words [overflow-wrap:anywhere]">
           {renderInlineContent(trimmed)}
         </p>
       )
@@ -825,6 +898,13 @@ function App() {
             </div>
           </div>
           <div className="flex flex-col gap-2 items-end">
+            <button
+              onClick={clearConversation}
+              disabled={aiLoading || messages.length === 0}
+              className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded px-2 py-1 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Clear Chat
+            </button>
             <select
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
@@ -862,13 +942,13 @@ function App() {
             <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
               <span className="text-xs text-slate-500 mb-1">{m.role === 'user' ? 'You' : 'AI'}</span>
               <div 
-                className={`rounded-xl p-3 text-sm flex flex-col items-start w-full shadow-inner ${
+                className={`rounded-xl p-3 text-sm flex flex-col items-start w-full min-w-0 break-words [overflow-wrap:anywhere] shadow-inner ${
                   m.role === 'user' 
                     ? 'bg-indigo-600/20 border border-indigo-500/30 text-indigo-100' 
                     : 'bg-slate-800 border border-slate-700 text-slate-300'
                 }`}
               >
-                {m.role === 'user' ? <span className="whitespace-pre-wrap leading-7">{m.content}</span> : <div className="w-full">{m.content ? renderMessageContent(m.content) : <span className="text-slate-500">Waiting for first tokens...</span>}</div>}
+                {m.role === 'user' ? <span className="whitespace-pre-wrap leading-7 break-words [overflow-wrap:anywhere]">{m.content}</span> : <div className="w-full min-w-0 break-words [overflow-wrap:anywhere]">{m.content ? renderMessageContent(m.content) : <span className="text-slate-500">Waiting for first tokens...</span>}</div>}
               </div>
             </div>
           ))}
