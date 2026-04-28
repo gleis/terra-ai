@@ -10,6 +10,8 @@ Terra-AI is an Electron desktop app for exploring Terraform workspaces locally. 
 - Runs `terraform graph` against that workspace and converts the DOT output into a React Flow diagram.
 - Retries once with `terraform init -reconfigure` if graph generation fails on the first pass.
 - Reads `.tf` files and `terragrunt.hcl` from the selected workspace and injects that context into the first AI chat request.
+- Detects installed Ollama models and lets you choose from the locally available chat models.
+- Streams AI responses into the sidebar and automatically requests a continuation if a reply is cut off by the token limit.
 - Accepts AI responses that include full-file code blocks and can write those files back into the selected workspace.
 
 ## Tech Stack
@@ -52,7 +54,7 @@ Start Ollama if it is not already running:
 ollama serve
 ```
 
-Pull one of the models the UI expects:
+Pull one of the recommended faster models:
 
 ```bash
 ollama pull gemma3
@@ -76,15 +78,19 @@ npm run dev
 2. Click `Load Workspace`.
 3. Choose a directory that contains Terraform files.
 4. Terra-AI runs `terraform graph` in that directory and renders the graph.
-5. Click a node to ask for an explanation of that resource.
-6. Use the AI sidebar to ask architecture or Terraform questions.
-7. Use `Clear Chat` in the AI Insights header to start a new conversation.
-8. If the AI returns a full-file code block with a leading filename comment, click `Apply Edit` to write it back to disk.
+5. Pick a local Ollama chat model from the AI Insights header.
+6. Click a node to ask for an explanation of that resource.
+7. Use the AI sidebar to ask architecture or Terraform questions.
+8. Use `Clear Chat` in the AI Insights header to start a new conversation.
+9. If the AI returns a full-file code block with a leading filename comment, click `Apply Edit` to write it back to disk.
 
 ## How The AI Integration Works
 
 - The main process sends chat requests directly to Ollama from Electron, which avoids browser CORS issues.
+- The app queries Ollama for the installed local models and populates the model selector dynamically.
 - On the first chat request for a loaded workspace, the app reads top-level `.tf` files and `terragrunt.hcl` and prepends them as system context.
+- The app sends requests with model thinking disabled for more direct visible answers in the sidebar.
+- If Ollama truncates a reply because of token limits, the app automatically asks it to continue and appends the rest of the answer.
 - The model is instructed to return complete file contents when proposing edits.
 - The renderer extracts the filename from the first comment line in a code block and uses that to overwrite the target file in the selected workspace.
 
