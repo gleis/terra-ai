@@ -29,7 +29,14 @@ You need these installed locally:
 - Node.js and npm
 - Terraform on your `PATH`
 - Ollama running locally on `http://127.0.0.1:11434`
-- At least one Ollama model used by the UI dropdown, currently `gemma4` or `llama3`
+- At least one Ollama chat model installed locally
+
+Recommended for speed:
+
+- `gemma3`
+- `llama3.2`
+
+Larger reasoning or coding-heavy models can work, but they are usually slower in the AI Insights pane.
 
 ## Start In Development
 
@@ -48,7 +55,13 @@ ollama serve
 Pull one of the models the UI expects:
 
 ```bash
-ollama pull gemma4
+ollama pull gemma3
+```
+
+You can also use:
+
+```bash
+ollama pull llama3.2
 ```
 
 Run the desktop app:
@@ -65,7 +78,8 @@ npm run dev
 4. Terra-AI runs `terraform graph` in that directory and renders the graph.
 5. Click a node to ask for an explanation of that resource.
 6. Use the AI sidebar to ask architecture or Terraform questions.
-7. If the AI returns a full-file code block with a leading filename comment, click `Apply Edit` to write it back to disk.
+7. Use `Clear Chat` in the AI Insights header to start a new conversation.
+8. If the AI returns a full-file code block with a leading filename comment, click `Apply Edit` to write it back to disk.
 
 ## How The AI Integration Works
 
@@ -79,7 +93,7 @@ npm run dev
 - This is a local desktop tool, not a hosted service.
 - Terraform parsing is based on `terraform graph`, so the selected workspace still needs to be valid enough for Terraform to initialize and graph.
 - Workspace context loading currently reads only top-level `.tf` files plus `terragrunt.hcl` from the chosen directory. It does not recurse into nested module directories.
-- The model selector is hard-coded to `gemma4` and `llama3`.
+- The app works best with local chat-oriented Ollama models. Smaller models such as `gemma3` or `llama3.2` generally feel faster in the UI.
 - File writes are based on the filename the model returns. The app strips leading slashes before writing, but it does not do deeper path validation.
 
 ## Useful Scripts

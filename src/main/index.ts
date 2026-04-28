@@ -7,6 +7,160 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
 const execAsync = promisify(exec)
+const OLLAMA_STREAM_EVENT = 'ollama:stream-event'
+const OLLAMA_DEBUG_PREFIX = '[terra-ai:ollama]'
+
+type OllamaTagResponse = {
+  models?: Array<{
+    name?: string
+    model?: string
+    size?: number
+  }>
+}
+
+async function streamOllamaResponse(
+  sender: Electron.WebContents,
+  requestId: string,
+  payload: Record<string, unknown>
+): Promise<void> {
+  console.log(OLLAMA_DEBUG_PREFIX, 'stream:start', requestId, {
+    model: payload.model,
+    stream: payload.stream,
+    messageCount: Array.isArray(payload.messages) ? payload.messages.length : 0,
+    options: payload.options
+  })
+
+  const response = await fetch('http://127.0.0.1:11434/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+
+  if (!response.ok) {
+    throw new Error(`Ollama HTTP Error: ${response.status}`)
+  }
+
+  if (!response.body) {
+    throw new Error('Ollama returned no response body')
+  }
+
+  const decoder = new TextDecoder()
+  const reader = response.body.getReader()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+
+      const parsed = JSON.parse(trimmed)
+      const content = parsed.message?.content
+
+      if (content) {
+        console.log(OLLAMA_DEBUG_PREFIX, 'stream:chunk', requestId, {
+          contentLength: content.length,
+          preview: content.slice(0, 120)
+        })
+        sender.send(OLLAMA_STREAM_EVENT, {
+          requestId,
+          type: 'chunk',
+          content
+        })
+      }
+
+      if (parsed.done) {
+        console.log(OLLAMA_DEBUG_PREFIX, 'stream:done', requestId, {
+          done: parsed.done,
+          doneReason: parsed.done_reason,
+          evalCount: parsed.eval_count
+        })
+        sender.send(OLLAMA_STREAM_EVENT, {
+          requestId,
+          type: 'done',
+          doneReason: parsed.done_reason
+        })
+      }
+    }
+
+    if (done) break
+  }
+
+  const trailing = buffer.trim()
+  if (trailing) {
+    const parsed = JSON.parse(trailing)
+    const content = parsed.message?.content
+    if (content) {
+      console.log(OLLAMA_DEBUG_PREFIX, 'stream:trailing-chunk', requestId, {
+        contentLength: content.length,
+        preview: content.slice(0, 120)
+      })
+      sender.send(OLLAMA_STREAM_EVENT, {
+        requestId,
+        type: 'chunk',
+        content
+      })
+    }
+    console.log(OLLAMA_DEBUG_PREFIX, 'stream:trailing-done', requestId, {
+      done: parsed.done,
+      doneReason: parsed.done_reason,
+      evalCount: parsed.eval_count
+    })
+    sender.send(OLLAMA_STREAM_EVENT, {
+      requestId,
+      type: 'done',
+      doneReason: parsed.done_reason
+    })
+  }
+}
+
+async function fetchOllamaModels(): Promise<string[]> {
+  const response = await fetch('http://127.0.0.1:11434/api/tags')
+
+  if (!response.ok) {
+    throw new Error(`Ollama HTTP Error: ${response.status}`)
+  }
+
+  const data = (await response.json()) as OllamaTagResponse
+  return (data.models || [])
+    .map((model) => model.name || model.model)
+    .filter((name): name is string => Boolean(name))
+}
+
+async function generateOllamaResponse(payload: Record<string, unknown>): Promise<any> {
+  console.log(OLLAMA_DEBUG_PREFIX, 'generate:start', {
+    model: payload.model,
+    messageCount: Array.isArray(payload.messages) ? payload.messages.length : 0,
+    options: payload.options
+  })
+  const response = await fetch('http://127.0.0.1:11434/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...payload,
+      stream: false
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error(`Ollama HTTP Error: ${response.status}`)
+  }
+
+  const data = await response.json()
+  console.log(OLLAMA_DEBUG_PREFIX, 'generate:done', {
+    model: data?.model,
+    hasMessage: Boolean(data?.message),
+    contentLength: typeof data?.message?.content === 'string' ? data.message.content.length : 0,
+    preview: typeof data?.message?.content === 'string' ? data.message.content.slice(0, 120) : ''
+  })
+
+  return data
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -122,20 +276,38 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('ollama:stream', async (event, payload) => {
+    try {
+      const { requestId, ...ollamaPayload } = payload
+      await streamOllamaResponse(event.sender, requestId, ollamaPayload)
+      return { success: true }
+    } catch (e: any) {
+      event.sender.send(OLLAMA_STREAM_EVENT, {
+        requestId: payload.requestId,
+        type: 'error',
+        error: e.message
+      })
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('ollama:listModels', async () => {
+    try {
+      const models = await fetchOllamaModels()
+      console.log(OLLAMA_DEBUG_PREFIX, 'models:list', models)
+      return { success: true, data: models }
+    } catch (e: any) {
+      console.error(OLLAMA_DEBUG_PREFIX, 'models:error', e.message)
+      return { success: false, error: e.message }
+    }
+  })
+
   ipcMain.handle('ollama:generate', async (_, payload) => {
     try {
-      // Use Node's built in fetch in the main process to completely bypass CORS 
-      const response = await fetch('http://127.0.0.1:11434/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      if (!response.ok) {
-        throw new Error(`Ollama HTTP Error: ${response.status}`)
-      }
-      const data = await response.json()
+      const data = await generateOllamaResponse(payload)
       return { success: true, data }
     } catch (e: any) {
+      console.error(OLLAMA_DEBUG_PREFIX, 'generate:error', e.message)
       return { success: false, error: e.message }
     }
   })

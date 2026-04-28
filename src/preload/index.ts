@@ -1,13 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+const OLLAMA_STREAM_EVENT = 'ollama:stream-event'
+
 // Custom APIs for renderer
 const api = {
   selectDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
   getTerraformGraph: (cwd: string) => ipcRenderer.invoke('terraform:graph', cwd),
   readWorkspaceFiles: (cwd: string) => ipcRenderer.invoke('workspace:readFiles', cwd),
   writeWorkspaceFile: (cwd: string, filename: string, content: string) => ipcRenderer.invoke('workspace:writeFile', { cwd, filename, content }),
-  queryOllama: (payload: any) => ipcRenderer.invoke('ollama:generate', payload)
+  listOllamaModels: () => ipcRenderer.invoke('ollama:listModels'),
+  generateOllama: (payload: any) => ipcRenderer.invoke('ollama:generate', payload),
+  streamOllama: (payload: any) => ipcRenderer.invoke('ollama:stream', payload),
+  onOllamaStreamEvent: (callback: (event: any) => void) => {
+    const listener = (_event, data) => callback(data)
+    ipcRenderer.on(OLLAMA_STREAM_EVENT, listener)
+    return () => ipcRenderer.removeListener(OLLAMA_STREAM_EVENT, listener)
+  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
