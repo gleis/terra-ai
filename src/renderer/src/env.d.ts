@@ -14,6 +14,7 @@ interface Window {
     readWorkspaceFiles: (cwd: string) => Promise<{ success: boolean; data?: string; error?: string }>
     writeWorkspaceFile: (cwd: string, filename: string, content: string) => Promise<{ success: boolean; error?: string }>
     listOllamaModels: () => Promise<{ success: boolean; data?: string[]; error?: string }>
+    generateOllama: (payload: Record<string, unknown>) => Promise<{ success: boolean; data?: any; error?: string }>
     streamOllama: (payload: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
     onOllamaStreamEvent: (callback: (event: OllamaStreamEvent) => void) => () => void
   }

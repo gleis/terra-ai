@@ -10,6 +10,7 @@ const api = {
   readWorkspaceFiles: (cwd: string) => ipcRenderer.invoke('workspace:readFiles', cwd),
   writeWorkspaceFile: (cwd: string, filename: string, content: string) => ipcRenderer.invoke('workspace:writeFile', { cwd, filename, content }),
   listOllamaModels: () => ipcRenderer.invoke('ollama:listModels'),
+  generateOllama: (payload: any) => ipcRenderer.invoke('ollama:generate', payload),
   streamOllama: (payload: any) => ipcRenderer.invoke('ollama:stream', payload),
   onOllamaStreamEvent: (callback: (event: any) => void) => {
     const listener = (_event, data) => callback(data)

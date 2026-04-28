@@ -104,6 +104,23 @@ async function fetchOllamaModels(): Promise<string[]> {
     .filter((name): name is string => Boolean(name))
 }
 
+async function generateOllamaResponse(payload: Record<string, unknown>): Promise<any> {
+  const response = await fetch('http://127.0.0.1:11434/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...payload,
+      stream: false
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error(`Ollama HTTP Error: ${response.status}`)
+  }
+
+  return response.json()
+}
+
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -237,6 +254,15 @@ app.whenReady().then(() => {
     try {
       const models = await fetchOllamaModels()
       return { success: true, data: models }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('ollama:generate', async (_, payload) => {
+    try {
+      const data = await generateOllamaResponse(payload)
+      return { success: true, data }
     } catch (e: any) {
       return { success: false, error: e.message }
     }

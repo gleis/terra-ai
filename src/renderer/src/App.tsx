@@ -100,6 +100,14 @@ function pickFastestModel(models: string[]): string {
   return [...candidates].sort((a, b) => scoreModelSpeed(b) - scoreModelSpeed(a))[0]
 }
 
+function extractOllamaTextResponse(data: any): string {
+  if (!data) return ''
+  if (typeof data.message?.content === 'string') return data.message.content
+  if (typeof data.response === 'string') return data.response
+  if (typeof data.content === 'string') return data.content
+  return ''
+}
+
 function clampWorkspaceContext(rawContext: string): string {
   const fileSections = rawContext.split(/\n--- /).filter(Boolean)
   let remaining = MAX_CONTEXT_CHARS
@@ -144,6 +152,7 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const activeRequestIdRef = useRef<string | null>(null)
   const receivedChunkRef = useRef(false)
+  const requestPayloadRef = useRef<Record<string, unknown> | null>(null)
 
   // Magic Add Modal State
   const [showAddModal, setShowAddModal] = useState(false)
@@ -157,30 +166,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const loadModels = async () => {
-      setOllamaStatus('checking')
-      setOllamaError(null)
-
-      const res = await window.api.listOllamaModels()
-      if (!res.success || !res.data) {
-        setOllamaStatus('offline')
-        setOllamaError(res.error || 'Unable to reach Ollama')
-        return
-      }
-
-      const models = res.data
-      setAvailableModels(models)
-      setSelectedModel((current) => {
-        if (models.includes(current)) return current
-        return pickFastestModel(models)
-      })
-      setOllamaStatus(models.length > 0 ? 'ready' : 'offline')
-      if (models.length === 0) {
-        setOllamaError('No Ollama models are installed.')
-      }
-    }
-
-    void loadModels()
+    void refreshOllamaStatus()
   }, [])
 
   useEffect(() => {
@@ -204,13 +190,45 @@ function App() {
       }
 
       if (event.type === 'done' && !receivedChunkRef.current) {
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === event.requestId
-              ? { ...message, content: 'No response tokens were received from Ollama. Check the selected model and local Ollama logs.' }
-              : message
+        const fallbackPayload = requestPayloadRef.current
+
+        if (!fallbackPayload) {
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === event.requestId
+                ? { ...message, content: 'No response tokens were received from Ollama. Check the selected model and local Ollama logs.' }
+                : message
+            )
           )
-        )
+        } else {
+          void (async () => {
+            const fallbackRes = await window.api.generateOllama(fallbackPayload)
+
+            if (!fallbackRes.success) {
+              await refreshOllamaStatus()
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === event.requestId
+                    ? { ...message, content: `Error: Ensure Ollama is running locally. ${fallbackRes.error || 'Fallback request failed.'}` }
+                    : message
+                )
+              )
+              return
+            }
+
+            const fallbackContent = extractOllamaTextResponse(fallbackRes.data)
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === event.requestId
+                  ? {
+                      ...message,
+                      content: fallbackContent || 'Ollama returned an empty response. Confirm the selected model can answer chat requests and that Ollama is still running.'
+                    }
+                  : message
+              )
+            )
+          })()
+        }
       }
 
       if (event.type === 'error') {
@@ -228,6 +246,7 @@ function App() {
         setAiLoading(false)
         activeRequestIdRef.current = null
         receivedChunkRef.current = false
+        requestPayloadRef.current = null
       }
     })
 
@@ -306,9 +325,40 @@ function App() {
     }
   }
 
+  const refreshOllamaStatus = async (): Promise<boolean> => {
+    setOllamaStatus('checking')
+    setOllamaError(null)
+
+    const res = await window.api.listOllamaModels()
+    if (!res.success || !res.data) {
+      setAvailableModels([])
+      setOllamaStatus('offline')
+      setOllamaError(res.error || 'Unable to reach Ollama')
+      return false
+    }
+
+    const models = res.data
+    setAvailableModels(models)
+    setSelectedModel((current) => {
+      if (models.includes(current)) return current
+      return pickFastestModel(models)
+    })
+
+    if (models.length === 0) {
+      setOllamaStatus('offline')
+      setOllamaError('No Ollama models are installed.')
+      return false
+    }
+
+    setOllamaStatus('ready')
+    return true
+  }
+
   const submitQuery = async (queryText: string) => {
     if (!queryText.trim() || aiLoading) return
-    if (ollamaStatus !== 'ready') return
+
+    const ollamaReady = await refreshOllamaStatus()
+    if (!ollamaReady) return
 
     // Optional: Only read and inject the heavy workspace context if we are at the start of a conversation
     let systemContext: ChatMessage[] = []
@@ -334,6 +384,7 @@ function App() {
     const newUserMsg: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content: queryText }
     const pendingAssistantMsg: ChatMessage = { id: requestId, role: 'assistant', content: '' }
     const updatedMessages = [...messages, newUserMsg, pendingAssistantMsg]
+    const ollamaMessages = [...systemContext, ...messages, newUserMsg].map(({ role, content }) => ({ role, content }))
     
     // Add optimistic UI message
     setMessages(updatedMessages)
@@ -343,15 +394,20 @@ function App() {
     receivedChunkRef.current = false
 
     try {
-      const res = await window.api.streamOllama({
-        requestId,
+      const ollamaPayload = {
         model: selectedModel,
-        messages: [...systemContext, ...updatedMessages].map(({ role, content }) => ({ role, content })),
+        messages: ollamaMessages,
         stream: true,
         options: {
           num_predict: RESPONSE_MODES[responseMode].maxTokens,
           temperature: responseMode === 'detailed' ? 0.4 : 0.2
         }
+      }
+      requestPayloadRef.current = ollamaPayload
+
+      const res = await window.api.streamOllama({
+        requestId,
+        ...ollamaPayload
       })
 
       if (!res.success) {
@@ -365,6 +421,7 @@ function App() {
       setAiLoading(false)
       activeRequestIdRef.current = null
       receivedChunkRef.current = false
+      requestPayloadRef.current = null
       setMessages((prev) =>
         prev.map((message) =>
           message.id === requestId
