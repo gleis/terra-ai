@@ -32,6 +32,7 @@ const MIN_SIDEBAR_WIDTH = 320
 const MAX_SIDEBAR_WIDTH = 720
 const MAX_CONTEXT_CHARS = 12000
 const MAX_FILE_SNIPPET_CHARS = 3000
+const OLLAMA_DEBUG_PREFIX = '[terra-ai:renderer]'
 
 type ChatRole = 'user' | 'assistant' | 'system'
 type ChatMessage = {
@@ -40,16 +41,10 @@ type ChatMessage = {
   content: string
 }
 
-type ResponseMode = 'brief' | 'normal' | 'detailed'
+type ResponseMode = 'normal' | 'detailed'
 type OllamaStatus = 'checking' | 'ready' | 'offline'
 
 const RESPONSE_MODES: Record<ResponseMode, { label: string; maxTokens: number; instruction: string }> = {
-  brief: {
-    label: 'Brief',
-    maxTokens: 220,
-    instruction:
-      'Respond briefly. Use short markdown sections, 3 to 5 bullets, and highlight the single most important action.'
-  },
   normal: {
     label: 'Normal',
     maxTokens: 500,
@@ -67,6 +62,11 @@ const RESPONSE_MODES: Record<ResponseMode, { label: string; maxTokens: number; i
 function scoreModelSpeed(modelName: string): number {
   const name = modelName.toLowerCase()
 
+  if (name.includes('gemma4')) return 95
+  if (name.includes('llama3')) return 90
+  if (name.includes('qwen') && name.includes('coding')) return 15
+  if (name.includes('nvfp4')) return 10
+  if (name.includes('30b') || name.includes('31b') || name.includes('32b') || name.includes('35b')) return 5
   if (name.includes('0.5b') || name.includes('1b')) return 100
   if (name.includes('1.5b') || name.includes('2b')) return 90
   if (name.includes('3b')) return 80
@@ -98,6 +98,15 @@ function pickFastestModel(models: string[]): string {
   const candidates = preferredModels.length > 0 ? preferredModels : models
 
   return [...candidates].sort((a, b) => scoreModelSpeed(b) - scoreModelSpeed(a))[0]
+}
+
+function pickBackupChatModel(models: string[], currentModel: string): string | null {
+  const candidates = models
+    .filter(isPreferredChatModel)
+    .filter((model) => model !== currentModel)
+    .sort((a, b) => scoreModelSpeed(b) - scoreModelSpeed(a))
+
+  return candidates[0] || null
 }
 
 function extractOllamaTextResponse(data: any): string {
@@ -148,11 +157,13 @@ function App() {
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>('checking')
   const [ollamaError, setOllamaError] = useState<string | null>(null)
-  const [responseMode, setResponseMode] = useState<ResponseMode>('brief')
+  const [responseMode, setResponseMode] = useState<ResponseMode>('normal')
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const activeRequestIdRef = useRef<string | null>(null)
   const receivedChunkRef = useRef(false)
   const requestPayloadRef = useRef<Record<string, unknown> | null>(null)
+  const fallbackRetryRef = useRef(false)
+  const truncatedAssistantIdsRef = useRef<Set<string>>(new Set())
 
   // Magic Add Modal State
   const [showAddModal, setShowAddModal] = useState(false)
@@ -175,10 +186,12 @@ function App() {
 
   useEffect(() => {
     const unsubscribe = window.api.onOllamaStreamEvent((event) => {
+      console.log(OLLAMA_DEBUG_PREFIX, 'stream:event', event)
       if (!event.requestId || event.requestId !== activeRequestIdRef.current) return
 
       if (event.type === 'chunk') {
         receivedChunkRef.current = true
+        fallbackRetryRef.current = false
         setMessages((prev) =>
           prev.map((message) =>
             message.id === event.requestId
@@ -193,6 +206,7 @@ function App() {
         const fallbackPayload = requestPayloadRef.current
 
         if (!fallbackPayload) {
+          console.warn(OLLAMA_DEBUG_PREFIX, 'stream:done-without-payload', event.requestId)
           setMessages((prev) =>
             prev.map((message) =>
               message.id === event.requestId
@@ -202,7 +216,9 @@ function App() {
           )
         } else {
           void (async () => {
+            console.warn(OLLAMA_DEBUG_PREFIX, 'stream:empty-fallback', event.requestId, fallbackPayload)
             const fallbackRes = await window.api.generateOllama(fallbackPayload)
+            console.log(OLLAMA_DEBUG_PREFIX, 'fallback:response', fallbackRes)
 
             if (!fallbackRes.success) {
               await refreshOllamaStatus()
@@ -217,6 +233,40 @@ function App() {
             }
 
             const fallbackContent = extractOllamaTextResponse(fallbackRes.data)
+            const backupModel = pickBackupChatModel(availableModels, String(fallbackPayload.model || ''))
+
+            if (!fallbackContent && backupModel && !fallbackRetryRef.current) {
+              fallbackRetryRef.current = true
+              console.warn(OLLAMA_DEBUG_PREFIX, 'fallback:retry-backup-model', {
+                requestId: event.requestId,
+                currentModel: fallbackPayload.model,
+                backupModel
+              })
+
+              const retryPayload = {
+                ...fallbackPayload,
+                model: backupModel
+              }
+
+              const retryRes = await window.api.generateOllama(retryPayload)
+              console.log(OLLAMA_DEBUG_PREFIX, 'fallback:backup-response', retryRes)
+
+              if (retryRes.success) {
+                const retryContent = extractOllamaTextResponse(retryRes.data)
+                if (retryContent) {
+                  setSelectedModel(backupModel)
+                  setMessages((prev) =>
+                    prev.map((message) =>
+                      message.id === event.requestId
+                        ? { ...message, content: retryContent }
+                        : message
+                    )
+                  )
+                  return
+                }
+              }
+            }
+
             setMessages((prev) =>
               prev.map((message) =>
                 message.id === event.requestId
@@ -243,10 +293,14 @@ function App() {
       }
 
       if (event.type === 'done' || event.type === 'error') {
+        if (event.type === 'done' && (event as any).doneReason === 'length' && event.requestId) {
+          truncatedAssistantIdsRef.current.add(event.requestId)
+        }
         setAiLoading(false)
         activeRequestIdRef.current = null
         receivedChunkRef.current = false
         requestPayloadRef.current = null
+        fallbackRetryRef.current = false
       }
     })
 
@@ -330,6 +384,7 @@ function App() {
     setOllamaError(null)
 
     const res = await window.api.listOllamaModels()
+    console.log(OLLAMA_DEBUG_PREFIX, 'models:status', res)
     if (!res.success || !res.data) {
       setAvailableModels([])
       setOllamaStatus('offline')
@@ -384,7 +439,11 @@ function App() {
     const newUserMsg: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content: queryText }
     const pendingAssistantMsg: ChatMessage = { id: requestId, role: 'assistant', content: '' }
     const updatedMessages = [...messages, newUserMsg, pendingAssistantMsg]
-    const ollamaMessages = [...systemContext, ...messages, newUserMsg].map(({ role, content }) => ({ role, content }))
+    const safeHistoryMessages = messages.filter((message) => {
+      if (message.role !== 'assistant') return true
+      return !truncatedAssistantIdsRef.current.has(message.id)
+    })
+    const ollamaMessages = [...systemContext, ...safeHistoryMessages, newUserMsg].map(({ role, content }) => ({ role, content }))
     
     // Add optimistic UI message
     setMessages(updatedMessages)
@@ -403,12 +462,21 @@ function App() {
           temperature: responseMode === 'detailed' ? 0.4 : 0.2
         }
       }
+      console.log(OLLAMA_DEBUG_PREFIX, 'submit:payload', {
+        requestId,
+        model: selectedModel,
+        responseMode,
+        messageCount: ollamaMessages.length,
+        lastMessage: ollamaMessages[ollamaMessages.length - 1],
+        options: ollamaPayload.options
+      })
       requestPayloadRef.current = ollamaPayload
 
       const res = await window.api.streamOllama({
         requestId,
         ...ollamaPayload
       })
+      console.log(OLLAMA_DEBUG_PREFIX, 'submit:stream-result', { requestId, res })
 
       if (!res.success) {
         throw new Error(res.error || 'Failed to connect to Ollama')

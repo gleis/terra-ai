@@ -5,6 +5,7 @@ interface OllamaStreamEvent {
   type: 'chunk' | 'done' | 'error'
   content?: string
   error?: string
+  doneReason?: string
 }
 
 interface Window {
