@@ -51,20 +51,23 @@ const CONTINUATION_MAX_TOKENS = 700
 function scoreModelSpeed(modelName: string): number {
   const name = modelName.toLowerCase()
 
+  // Known-fast families first
   if (name.includes('gemma4')) return 95
   if (name.includes('llama3')) return 90
+
+  // Known-slow variants
   if (name.includes('qwen') && name.includes('coding')) return 15
   if (name.includes('nvfp4')) return 10
-  if (name.includes('30b') || name.includes('31b') || name.includes('32b') || name.includes('35b')) return 5
+  if (name.includes('30b') || name.includes('31b') || name.includes('32b') || name.includes('34b') || name.includes('35b')) return 5
+
+  // Score by parameter count when present
   if (name.includes('0.5b') || name.includes('1b')) return 100
   if (name.includes('1.5b') || name.includes('2b')) return 90
   if (name.includes('3b')) return 80
   if (name.includes('mini') || name.includes('small')) return 75
   if (name.includes('7b') || name.includes('8b')) return 60
-  if (name.includes('llama3')) return 55
   if (name.includes('gemma')) return 45
   if (name.includes('13b') || name.includes('14b')) return 35
-  if (name.includes('32b') || name.includes('34b')) return 20
 
   return 50
 }
@@ -149,6 +152,9 @@ function App() {
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>('checking')
   const [ollamaError, setOllamaError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  // The stream-event listener is registered once, so it must read the current
+  // model list through a ref to avoid a stale closure over availableModels.
+  const availableModelsRef = useRef<string[]>([])
   const activeRequestIdRef = useRef<string | null>(null)
   const receivedChunkRef = useRef(false)
   const requestPayloadRef = useRef<Record<string, unknown> | null>(null)
@@ -225,7 +231,7 @@ function App() {
             }
 
             const fallbackContent = extractOllamaTextResponse(fallbackRes.data)
-            const backupModel = pickBackupChatModel(availableModels, String(fallbackPayload.model || ''))
+            const backupModel = pickBackupChatModel(availableModelsRef.current, String(fallbackPayload.model || ''))
 
             if (!fallbackContent && backupModel && !fallbackRetryRef.current) {
               fallbackRetryRef.current = true
@@ -447,6 +453,7 @@ function App() {
     const res = await window.api.listOllamaModels()
     console.log(OLLAMA_DEBUG_PREFIX, 'models:status', res)
     if (!res.success || !res.data) {
+      availableModelsRef.current = []
       setAvailableModels([])
       setOllamaStatus('offline')
       setOllamaError(res.error || 'Unable to reach Ollama')
@@ -454,6 +461,7 @@ function App() {
     }
 
     const models = res.data
+    availableModelsRef.current = models
     setAvailableModels(models)
     setSelectedModel((current) => {
       if (models.includes(current)) return current
@@ -477,7 +485,7 @@ function App() {
     if (!ollamaReady) return
 
     // Optional: Only read and inject the heavy workspace context if we are at the start of a conversation
-    let systemContext: ChatMessage[] = []
+    const systemContext: ChatMessage[] = []
     if (cwd && messages.length === 0) {
       const res = await window.api.readWorkspaceFiles(cwd)
       if (res.success && res.data) {
@@ -690,8 +698,10 @@ function App() {
         const langInfo = lines[0] || '```'
         const code = lines.slice(1, -1).join('\n')
         
-        // Extract filepath from first line comment (e.g. # /workspace/main.tf )
-        const firstLineMatch = code.match(/^#\s*(.+)$/m)
+        // Extract filepath from the first line only (e.g. "# main.tf"). Matching
+        // anywhere in the block would pick up ordinary Terraform comments.
+        const firstLine = code.split('\n', 1)[0] || ''
+        const firstLineMatch = firstLine.match(/^#\s*(\S+\.(?:tf|tfvars|hcl))\s*$/)
         const codeFilePath = firstLineMatch ? firstLineMatch[1].trim() : null
 
         return (

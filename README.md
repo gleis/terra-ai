@@ -30,7 +30,7 @@ You need these installed locally:
 
 - Node.js and npm
 - Terraform on your `PATH`
-- Ollama running locally on `http://127.0.0.1:11434`
+- Ollama running locally on `http://127.0.0.1:11434` (override with the `OLLAMA_HOST` environment variable)
 - At least one Ollama chat model installed locally
 
 Recommended for speed:
@@ -86,7 +86,7 @@ npm run dev
 
 ## How The AI Integration Works
 
-- The main process sends chat requests directly to Ollama from Electron, which avoids browser CORS issues.
+- The main process sends chat requests directly to Ollama from Electron, which avoids browser CORS issues. The endpoint defaults to `http://127.0.0.1:11434` and can be changed with `OLLAMA_HOST`.
 - The app queries Ollama for the installed local models and populates the model selector dynamically.
 - On the first chat request for a loaded workspace, the app reads top-level `.tf` files and `terragrunt.hcl` and prepends them as system context.
 - The app sends requests with model thinking disabled for more direct visible answers in the sidebar.
@@ -100,7 +100,7 @@ npm run dev
 - Terraform parsing is based on `terraform graph`, so the selected workspace still needs to be valid enough for Terraform to initialize and graph.
 - Workspace context loading currently reads only top-level `.tf` files plus `terragrunt.hcl` from the chosen directory. It does not recurse into nested module directories.
 - The app works best with local chat-oriented Ollama models. Smaller models such as `gemma3` or `llama3.2` generally feel faster in the UI.
-- File writes are based on the filename the model returns. The app strips leading slashes before writing, but it does not do deeper path validation.
+- File writes are based on the filename the model returns. The app resolves the target path and refuses to write outside the selected workspace (absolute paths and `../` traversal are blocked), and only accepts `.tf`, `.tfvars`, and `.hcl` filenames from code blocks.
 
 ## Useful Scripts
 

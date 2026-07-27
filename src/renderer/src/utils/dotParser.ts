@@ -8,7 +8,10 @@ export function parseDotToReactFlow(dotString: string): { nodes: Node[]; edges: 
   // "[root] module.my_module (expand)" [label = "module.my_module", shape = "box"]
   // "[root] module.my_module (expand)" -> "[root] aws_vpc.main (expand)"
   
-  const nodeRegex = /"([^"]+)"\s*\[label\s*=\s*"([^"]+)",\s*shape\s*=\s*"([^"]+)"\]/g
+  // Match any node declaration with a label attribute, regardless of attribute
+  // order or which other attributes are present (terraform graph output varies
+  // between versions).
+  const nodeRegex = /"([^"]+)"\s*\[[^\]]*label\s*=\s*"([^"]+)"[^\]]*\]/g
   const edgeRegex = /"([^"]+)"\s*->\s*"([^"]+)"/g
   
   let match
