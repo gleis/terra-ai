@@ -1,5 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join, extname } from 'path'
+import { join, extname, resolve, sep } from 'path'
 import { readdir, readFile, writeFile } from 'fs/promises'
 import { exec } from 'child_process'
 import { promisify } from 'util'
@@ -9,6 +9,8 @@ import icon from '../../resources/icon.png?asset'
 const execAsync = promisify(exec)
 const OLLAMA_STREAM_EVENT = 'ollama:stream-event'
 const OLLAMA_DEBUG_PREFIX = '[terra-ai:ollama]'
+// Allow overriding the Ollama endpoint (e.g. OLLAMA_HOST=http://192.168.1.10:11434)
+const OLLAMA_BASE_URL = process.env.OLLAMA_HOST?.replace(/\/+$/, '') || 'http://127.0.0.1:11434'
 
 type OllamaTagResponse = {
   models?: Array<{
@@ -30,7 +32,7 @@ async function streamOllamaResponse(
     options: payload.options
   })
 
-  const response = await fetch('http://127.0.0.1:11434/api/chat', {
+  const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -44,6 +46,40 @@ async function streamOllamaResponse(
     throw new Error('Ollama returned no response body')
   }
 
+  const send = (event: Record<string, unknown>): void => {
+    if (!sender.isDestroyed()) {
+      sender.send(OLLAMA_STREAM_EVENT, { requestId, ...event })
+    }
+  }
+
+  let doneSent = false
+
+  const processLine = (line: string): void => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+
+    let parsed: { message?: { content?: string }; done?: boolean; done_reason?: string }
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      console.warn(OLLAMA_DEBUG_PREFIX, 'stream:unparseable-line', requestId, trimmed.slice(0, 200))
+      return
+    }
+
+    const content = parsed.message?.content
+    if (content) {
+      send({ type: 'chunk', content })
+    }
+
+    if (parsed.done && !doneSent) {
+      doneSent = true
+      console.log(OLLAMA_DEBUG_PREFIX, 'stream:done', requestId, {
+        doneReason: parsed.done_reason
+      })
+      send({ type: 'done', doneReason: parsed.done_reason })
+    }
+  }
+
   const decoder = new TextDecoder()
   const reader = response.body.getReader()
   let buffer = ''
@@ -54,73 +90,22 @@ async function streamOllamaResponse(
 
     const lines = buffer.split('\n')
     buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-
-      const parsed = JSON.parse(trimmed)
-      const content = parsed.message?.content
-
-      if (content) {
-        console.log(OLLAMA_DEBUG_PREFIX, 'stream:chunk', requestId, {
-          contentLength: content.length,
-          preview: content.slice(0, 120)
-        })
-        sender.send(OLLAMA_STREAM_EVENT, {
-          requestId,
-          type: 'chunk',
-          content
-        })
-      }
-
-      if (parsed.done) {
-        console.log(OLLAMA_DEBUG_PREFIX, 'stream:done', requestId, {
-          done: parsed.done,
-          doneReason: parsed.done_reason,
-          evalCount: parsed.eval_count
-        })
-        sender.send(OLLAMA_STREAM_EVENT, {
-          requestId,
-          type: 'done',
-          doneReason: parsed.done_reason
-        })
-      }
-    }
+    lines.forEach(processLine)
 
     if (done) break
   }
 
-  const trailing = buffer.trim()
-  if (trailing) {
-    const parsed = JSON.parse(trailing)
-    const content = parsed.message?.content
-    if (content) {
-      console.log(OLLAMA_DEBUG_PREFIX, 'stream:trailing-chunk', requestId, {
-        contentLength: content.length,
-        preview: content.slice(0, 120)
-      })
-      sender.send(OLLAMA_STREAM_EVENT, {
-        requestId,
-        type: 'chunk',
-        content
-      })
-    }
-    console.log(OLLAMA_DEBUG_PREFIX, 'stream:trailing-done', requestId, {
-      done: parsed.done,
-      doneReason: parsed.done_reason,
-      evalCount: parsed.eval_count
-    })
-    sender.send(OLLAMA_STREAM_EVENT, {
-      requestId,
-      type: 'done',
-      doneReason: parsed.done_reason
-    })
+  processLine(buffer)
+
+  // Guarantee the renderer always gets a terminal event, even if the
+  // stream ended without an explicit done message.
+  if (!doneSent) {
+    send({ type: 'done', doneReason: 'stream_end' })
   }
 }
 
 async function fetchOllamaModels(): Promise<string[]> {
-  const response = await fetch('http://127.0.0.1:11434/api/tags')
+  const response = await fetch(`${OLLAMA_BASE_URL}/api/tags`)
 
   if (!response.ok) {
     throw new Error(`Ollama HTTP Error: ${response.status}`)
@@ -138,7 +123,7 @@ async function generateOllamaResponse(payload: Record<string, unknown>): Promise
     messageCount: Array.isArray(payload.messages) ? payload.messages.length : 0,
     options: payload.options
   })
-  const response = await fetch('http://127.0.0.1:11434/api/chat', {
+  const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -199,7 +184,7 @@ function createWindow(): void {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId('com.terra-ai.app')
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -207,9 +192,6 @@ app.whenReady().then(() => {
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
-
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
 
   ipcMain.handle('dialog:openDirectory', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -261,13 +243,16 @@ app.whenReady().then(() => {
 
   ipcMain.handle('workspace:writeFile', async (_, { cwd, filename, content }) => {
     try {
-      // Ensure we have an absolute path targeting the workspace directory
-      // If the AI returns an absolute path, join might just append it so we should 
-      // check if filename is absolute, but joining safely usually strips leading slashes in path.join if intended, 
-      // actually path.join('/my/cwd', '/my/target.tf') resolves to '/my/target.tf' in posix.
-      // So we will just strip leading slashes and force it to be relative to cwd.
-      const safeFilename = filename.replace(/^(\/|\\)+/, '')
-      const targetPath = join(cwd, safeFilename)
+      // The filename comes from AI output, so treat it as untrusted. Strip any
+      // leading slashes, then resolve and verify the final path stays inside
+      // the workspace (blocks absolute paths and ../ traversal).
+      const safeFilename = String(filename).replace(/^(\/|\\)+/, '')
+      const workspaceRoot = resolve(cwd)
+      const targetPath = resolve(workspaceRoot, safeFilename)
+
+      if (targetPath !== workspaceRoot && !targetPath.startsWith(workspaceRoot + sep)) {
+        return { success: false, error: `Refusing to write outside the workspace: ${filename}` }
+      }
 
       await writeFile(targetPath, content, 'utf-8')
       return { success: true }

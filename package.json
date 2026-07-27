@@ -1,10 +1,10 @@
 {
   "name": "terra-ai",
   "version": "1.0.0",
-  "description": "An Electron application with React and TypeScript",
+  "description": "Terraform workspace visualizer with local AI insights powered by Ollama",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "M Gleissner",
+  "homepage": "https://github.com/gleis/terra-ai",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
