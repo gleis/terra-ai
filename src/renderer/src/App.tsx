@@ -12,7 +12,7 @@ import 'reactflow/dist/style.css'
 
 import { parseDotToReactFlow } from './utils/dotParser'
 import { getLayoutedElements } from './utils/layout'
-import { estimateMonthlyCost } from './utils/costEstimates'
+import { estimateResourceCost, type ResourceAttributes } from './utils/costEstimates'
 import DiffModal, { PendingEdit } from './components/DiffModal'
 import NodeDetailPanel from './components/NodeDetailPanel'
 import type { SecurityFinding } from './types'
@@ -43,9 +43,9 @@ const TerraformNodeComponent = ({ data }: any) => {
           {data.cost !== null && (
             <span
               className="rounded bg-sky-500/15 px-1 py-0.5 text-[10px] text-sky-300"
-              title="Very rough monthly estimate"
+              title={`Rough monthly estimate${data.costBasis ? ` — ${data.costBasis}` : ''}`}
             >
-              ~${data.cost}/mo
+              ~${data.cost}/mo{data.costApproximate ? '?' : ''}
             </span>
           )}
           {data.findingCount > 0 && (
@@ -220,6 +220,7 @@ function App() {
   } | null>(null)
   const [nodeSaving, setNodeSaving] = useState(false)
   const [nodeSaveError, setNodeSaveError] = useState<string | null>(null)
+  const [resourceAttributes, setResourceAttributes] = useState<Map<string, ResourceAttributes>>(new Map())
 
   useEffect(() => {
     const lastWorkspace = localStorage.getItem('terra-ai-last-workspace')
@@ -472,6 +473,14 @@ function App() {
       setEdges(layoutedEdges)
       setCwd(path)
       localStorage.setItem('terra-ai-last-workspace', path)
+
+      // Refresh cost-relevant attributes so estimates reflect what is on disk
+      const attrRes = await window.api.getResourceAttributes(path)
+      if (attrRes.success && attrRes.data) {
+        setResourceAttributes(new Map(attrRes.data.map((r) => [r.address, r.attributes])))
+      } else {
+        setResourceAttributes(new Map())
+      }
 
       // Plan results are stale after any reload, so always clear them.
       setPlanChanges(new Map())
@@ -849,18 +858,21 @@ function App() {
     const query = searchTerm.trim().toLowerCase()
     return nodes.map((node) => {
       const label = String(node.data?.label || '')
+      const estimate = estimateResourceCost(label, lookupByLabel(resourceAttributes, label) || {})
       return {
         ...node,
         data: {
           ...node.data,
           planAction: lookupByLabel(planChanges, label) || null,
-          cost: estimateMonthlyCost(label),
+          cost: estimate?.monthly ?? null,
+          costBasis: estimate?.basis ?? null,
+          costApproximate: estimate?.approximate ?? false,
           findingCount: (lookupByLabel(findingsByResource, label) || []).length,
           dimmed: query.length > 0 && !label.toLowerCase().includes(query)
         }
       }
     })
-  }, [nodes, planChanges, findingsByResource, searchTerm])
+  }, [nodes, planChanges, findingsByResource, searchTerm, resourceAttributes])
 
   // Extract every filename-tagged code block from an assistant message
   const extractEditsFromContent = (content: string): Array<{ filename: string; content: string }> => {
@@ -1167,6 +1179,7 @@ function App() {
               saving={nodeSaving}
               saveError={nodeSaveError}
               planAction={lookupByLabel(planChanges, detailNode.label) || null}
+              attributes={lookupByLabel(resourceAttributes, detailNode.label) || {}}
               findings={lookupByLabel(findingsByResource, detailNode.label) || []}
               onExplain={() => void explainNode(detailNode.label)}
               onSave={saveNodeSnippet}

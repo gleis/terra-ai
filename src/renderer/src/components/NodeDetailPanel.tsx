@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SecurityFinding } from '../types'
-import { estimateMonthlyCost } from '../utils/costEstimates'
+import { estimateResourceCost, type ResourceAttributes } from '../utils/costEstimates'
 
 type NodeDetailPanelProps = {
   label: string
@@ -10,6 +10,7 @@ type NodeDetailPanelProps = {
   saving: boolean
   saveError: string | null
   planAction: string | null
+  attributes: ResourceAttributes
   findings: SecurityFinding[]
   onExplain: () => void
   onSave: (snippet: string) => Promise<boolean>
@@ -36,6 +37,7 @@ export default function NodeDetailPanel({
   saving,
   saveError,
   planAction,
+  attributes,
   findings,
   onExplain,
   onSave,
@@ -46,7 +48,7 @@ export default function NodeDetailPanel({
   const [draft, setDraft] = useState(snippet || '')
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
-  const cost = estimateMonthlyCost(label)
+  const cost = estimateResourceCost(label, attributes)
   const action = planAction ? ACTION_LABELS[planAction] : null
   const isDirty = editing && draft !== (snippet || '')
 
@@ -122,9 +124,10 @@ export default function NodeDetailPanel({
             {cost !== null && (
               <span
                 className="text-[11px] text-sky-300 border border-sky-500/40 bg-sky-500/10 rounded px-1.5 py-0.5"
-                title="Very rough estimate, small/default sizing, us-east-1. Not real pricing."
+                title="Rough us-east-1 on-demand approximation. Not real pricing."
               >
-                ~${cost}/mo (rough)
+                ~${cost.monthly}/mo · {cost.basis}
+                {cost.approximate ? ' (uncertain)' : ''}
               </span>
             )}
             {findings.length > 0 && (

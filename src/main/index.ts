@@ -5,6 +5,7 @@ import { exec } from 'child_process'
 import { promisify } from 'util'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { findHclBlockRange, extractHclBlock, parseResourcesInFile } from './hcl'
 
 const execAsync = promisify(exec)
 const OLLAMA_STREAM_EVENT = 'ollama:stream-event'
@@ -185,49 +186,19 @@ function resolveInsideWorkspace(cwd: string, filename: string): string | null {
   return targetPath
 }
 
-// Locate the character range of the HCL block for a graph node label like
-// "aws_vpc.main", "data.aws_ami.ubuntu", or "module.network" by brace matching.
-function findHclBlockRange(content: string, label: string): { start: number; end: number } | null {
-  let headerRegex: RegExp
-  const dataMatch = label.match(/^data\.([\w-]+)\.([\w-]+)$/)
-  const moduleMatch = label.match(/^module\.([\w-]+)/)
-  const resourceMatch = label.match(/^([\w-]+)\.([\w-]+)$/)
+// Collect every resource block across the workspace with its cost attributes.
+async function collectResourceAttributes(
+  cwd: string
+): Promise<Array<{ address: string; type: string; attributes: Record<string, string> }>> {
+  const files = await collectTerraformFiles(cwd)
+  const resources: Array<{ address: string; type: string; attributes: Record<string, string> }> = []
 
-  if (dataMatch) {
-    headerRegex = new RegExp(`^\\s*data\\s+"${dataMatch[1]}"\\s+"${dataMatch[2]}"\\s*\\{`, 'm')
-  } else if (moduleMatch) {
-    headerRegex = new RegExp(`^\\s*module\\s+"${moduleMatch[1]}"\\s*\\{`, 'm')
-  } else if (resourceMatch) {
-    headerRegex = new RegExp(`^\\s*resource\\s+"${resourceMatch[1]}"\\s+"${resourceMatch[2]}"\\s*\\{`, 'm')
-  } else {
-    return null
+  for (const relPath of files) {
+    const content = await readFile(join(cwd, relPath), 'utf-8')
+    resources.push(...parseResourcesInFile(content))
   }
 
-  const match = headerRegex.exec(content)
-  if (!match) return null
-
-  // The regex may match leading whitespace/newline; start at the first non-space
-  let start = match.index
-  while (start < content.length && /\s/.test(content[start])) start += 1
-
-  let depth = 0
-  let inString = false
-  for (let i = content.indexOf('{', match.index); i < content.length; i += 1) {
-    const char = content[i]
-    if (char === '"' && content[i - 1] !== '\\') inString = !inString
-    if (inString) continue
-    if (char === '{') depth += 1
-    if (char === '}') {
-      depth -= 1
-      if (depth === 0) return { start, end: i + 1 }
-    }
-  }
-  return null
-}
-
-function extractHclBlock(content: string, label: string): string | null {
-  const range = findHclBlockRange(content, label)
-  return range ? content.slice(range.start, range.end).trim() : null
+  return resources
 }
 
 function createWindow(): void {
@@ -349,6 +320,15 @@ app.whenReady().then(() => {
         }
       }
       return { success: true, data: null }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('workspace:resourceAttributes', async (_, cwd) => {
+    try {
+      const resources = await collectResourceAttributes(cwd)
+      return { success: true, data: resources }
     } catch (e: any) {
       return { success: false, error: e.message }
     }

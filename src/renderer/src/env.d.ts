@@ -32,6 +32,11 @@ interface Window {
       label: string,
       snippet: string
     ) => Promise<{ success: boolean; error?: string }>
+    getResourceAttributes: (cwd: string) => Promise<{
+      success: boolean
+      data?: Array<{ address: string; type: string; attributes: Record<string, string> }>
+      error?: string
+    }>
     runTerraformPlan: (
       cwd: string,
       refreshOnly: boolean

@@ -121,7 +121,7 @@ npm run dev
 
 `Scan` runs `tfsec` and adds a `⚠ n` badge to each affected node. Findings are listed in full in the node detail panel.
 
-Nodes also carry a rough `~$n/mo` cost badge where the resource type is recognized.
+Nodes also carry a rough `~$n/mo` cost badge where the resource type is recognized. See [Cost Estimates](#cost-estimates) for how the number is derived.
 
 Both plan and drift results are cleared with the `Clear` button in the status bar, or automatically when you load a different workspace.
 
@@ -136,6 +136,28 @@ Clicking a node opens a panel showing:
 - An `Explain with AI` button that sends the resource to the AI sidebar
 
 Resources defined inside external modules may not have a locatable source block; the panel says so rather than guessing.
+
+### Cost Estimates
+
+Estimates are derived from the resource's actual attributes, so they respond to sizing changes — resizing an instance in the editor and saving updates the badge immediately.
+
+What is taken into account:
+
+| Resource | Drivers |
+| --- | --- |
+| `aws_instance` | `instance_type`, attached `volume_size`, `count` |
+| `aws_db_instance`, `aws_rds_cluster_instance` | `instance_class`, `allocated_storage`, `multi_az` |
+| `aws_elasticache_*` | `node_type`, node/replica count |
+| `aws_autoscaling_group`, `aws_eks_node_group` | `instance_type` or `instance_types`, `desired_capacity`/`desired_size` |
+| `aws_ebs_volume` | `size`, `storage_type` |
+| `aws_redshift_cluster` | `number_of_nodes` |
+| Others | Flat per-type estimate |
+
+Instance pricing uses each family's `.large` on-demand hourly rate scaled by size, which tracks AWS's roughly linear within-family scaling. Spot requests get a 65% discount, RDS and ElastiCache carry a managed-service premium, and `count` or `for_each` over a literal list multiplies the total.
+
+When a value comes from a variable or interpolation (`instance_type = var.size`), the estimate falls back to an assumed default and is marked uncertain — a `?` on the node badge and `(uncertain)` in the detail panel.
+
+These remain approximations of us-east-1 on-demand Linux pricing for relative comparison, not billing figures. Reserved instances, savings plans, data transfer, request-based charges, and regional differences are all ignored. Use Infracost or the AWS calculator for real numbers.
 
 ### Editing A Resource In Place
 
@@ -175,7 +197,7 @@ AI-proposed edits are never written straight to disk:
 - This is a local desktop tool, not a hosted service.
 - Terraform parsing is based on `terraform graph`, so the selected workspace still needs to be valid enough for Terraform to initialize and graph.
 - `Plan` and `Drift` run real `terraform plan` commands, so they need working provider credentials and a valid backend for the workspace.
-- Cost badges are very rough built-in estimates (small/default sizing, us-east-1) for architecture review only — not real pricing. Use Infracost or the AWS calculator for real numbers.
+- Cost badges are rough built-in estimates (us-east-1 on-demand) for architecture review only — not real pricing. They read sizing attributes from your HCL but ignore reserved/spot pricing beyond a flat discount, data transfer, and request-based charges. Use Infracost or the AWS calculator for real numbers.
 - The security scan requires `tfsec` on your `PATH` (`brew install tfsec`).
 - The app works best with local chat-oriented Ollama models. Smaller models such as `gemma3` or `llama3.2` generally feel faster in the UI.
 - File writes are based on the filename the model returns. The app resolves the target path and refuses to write outside the selected workspace (absolute paths and `../` traversal are blocked), and only accepts `.tf`, `.tfvars`, and `.hcl` filenames from code blocks.
@@ -203,6 +225,7 @@ Notes:
 
 ```text
 src/main/index.ts                        Electron main process, IPC handlers, terraform/tfsec/Ollama calls
+src/main/hcl.ts                          Pure HCL parsing: block ranges, attribute extraction
 src/preload/index.ts                     Preload bridge exposing safe APIs to the renderer
 src/preload/index.d.ts                   Types for the bridged API
 src/renderer/src/App.tsx                 Main React application
@@ -214,7 +237,7 @@ src/renderer/src/utils/
   dotParser.ts                           terraform graph DOT -> React Flow
   layout.ts                              Dagre auto-layout
   diff.ts                                LCS line diff
-  costEstimates.ts                       Rough monthly cost lookup table
+  costEstimates.ts                       Attribute-aware monthly cost model
 example-terraform/                       Example Terraform workspace for testing
 out/                                     Built output
 ```
@@ -232,6 +255,7 @@ out/                                     Built output
 | `workspace:readFile` | Single file read, used to build diffs |
 | `workspace:writeFile` | Sandboxed write inside the workspace |
 | `workspace:findResource` | Locate a resource's HCL block by graph label |
+| `workspace:resourceAttributes` | Extract cost-relevant attributes from every resource block |
 | `workspace:updateResource` | Replace a single HCL block in place, leaving the rest of the file untouched |
 | `ollama:listModels` / `ollama:generate` / `ollama:stream` | Local model access |
 
