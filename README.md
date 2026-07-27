@@ -20,6 +20,7 @@ Everything runs on your machine. No workspace content is sent to a hosted servic
 - Checks for state drift with `terraform plan -refresh-only` and highlights drifted resources.
 - Runs a tfsec security scan (if installed) and badges affected nodes with their findings.
 - Shows a node detail panel with the resource's HCL source, plan status, rough monthly cost estimate, and security findings.
+- Lets you edit a resource's HCL directly in that panel and write it back to its file, with formatting and validation on save.
 - Filters/highlights graph nodes with a search box.
 - Persists chat history per workspace across app restarts.
 
@@ -97,10 +98,11 @@ npm run dev
 4. Terra-AI runs `terraform graph` in that directory and renders the graph.
 5. Pick a local Ollama chat model from the AI Insights header.
 6. Click a node to open its detail panel (source block, plan status, cost, findings) and use `Explain with AI` from there.
-7. Use `Plan` to color the graph by planned changes, `Drift` to check for state drift, and `Scan` to run tfsec.
-8. Use the search box in the header to filter large graphs.
-9. Use the AI sidebar to ask architecture or Terraform questions.
-10. If the AI returns full-file code blocks with leading filename comments, click `Review & Apply` (or `Review all changes` for multi-file responses) to inspect the diff before writing to disk. Files are formatted and validated after each write.
+7. Use `Edit` in that panel to change the resource's HCL directly and save it back to its file.
+8. Use `Plan` to color the graph by planned changes, `Drift` to check for state drift, and `Scan` to run tfsec.
+9. Use the search box in the header to filter large graphs.
+10. Use the AI sidebar to ask architecture or Terraform questions.
+11. If the AI returns full-file code blocks with leading filename comments, click `Review & Apply` (or `Review all changes` for multi-file responses) to inspect the diff before writing to disk. Files are formatted and validated after each write.
 
 ## Feature Reference
 
@@ -119,7 +121,7 @@ npm run dev
 
 `Scan` runs `tfsec` and adds a `⚠ n` badge to each affected node. Findings are listed in full in the node detail panel.
 
-Nodes also carry a rough `~$n/mo` cost badge where the resource type is recognized.
+Nodes also carry a rough `~$n/mo` cost badge where the resource type is recognized. See [Cost Estimates](#cost-estimates) for how the number is derived.
 
 Both plan and drift results are cleared with the `Clear` button in the status bar, or automatically when you load a different workspace.
 
@@ -134,6 +136,42 @@ Clicking a node opens a panel showing:
 - An `Explain with AI` button that sends the resource to the AI sidebar
 
 Resources defined inside external modules may not have a locatable source block; the panel says so rather than guessing.
+
+### Cost Estimates
+
+Estimates are derived from the resource's actual attributes, so they respond to sizing changes — resizing an instance in the editor and saving updates the badge immediately.
+
+What is taken into account:
+
+| Resource | Drivers |
+| --- | --- |
+| `aws_instance` | `instance_type`, attached `volume_size`, `count` |
+| `aws_db_instance`, `aws_rds_cluster_instance` | `instance_class`, `allocated_storage`, `multi_az` |
+| `aws_elasticache_*` | `node_type`, node/replica count |
+| `aws_autoscaling_group`, `aws_eks_node_group` | `instance_type` or `instance_types`, `desired_capacity`/`desired_size` |
+| `aws_ebs_volume` | `size`, `storage_type` |
+| `aws_redshift_cluster` | `number_of_nodes` |
+| Others | Flat per-type estimate |
+
+Instance pricing uses each family's `.large` on-demand hourly rate scaled by size, which tracks AWS's roughly linear within-family scaling. Spot requests get a 65% discount, RDS and ElastiCache carry a managed-service premium, and `count` or `for_each` over a literal list multiplies the total.
+
+When a value comes from a variable or interpolation (`instance_type = var.size`), the estimate falls back to an assumed default and is marked uncertain — a `?` on the node badge and `(uncertain)` in the detail panel.
+
+These remain approximations of us-east-1 on-demand Linux pricing for relative comparison, not billing figures. Reserved instances, savings plans, data transfer, request-based charges, and regional differences are all ignored. Use Infracost or the AWS calculator for real numbers.
+
+### Editing A Resource In Place
+
+`Edit` in the detail panel turns the source block into an editor:
+
+- `Save Changes` (or ⌘/Ctrl + Enter) writes the block back into its file, then runs `terraform fmt` on that file and `terraform validate` on the workspace.
+- `Cancel` (or Escape) discards the draft. An `unsaved changes` badge appears while the draft differs from what is on disk.
+- Tab inserts two spaces instead of moving focus.
+- After a successful save the graph reloads and the panel re-reads the block from disk, so you see the formatted result.
+- If validation fails, the error is shown in the panel. The edit is still written — this reports the problem rather than silently reverting your work.
+
+The block is re-located by resource address at save time rather than by remembered offsets, so a file that changed on disk since the panel was opened produces a clear error instead of a corrupted write. Only the targeted block is rewritten; everything else in the file is left byte-for-byte intact.
+
+Unlike AI-proposed edits, your own edits are written directly without a diff review — you are the author, and the diff gate exists for changes you did not write.
 
 ### Reviewing AI Edits
 
@@ -159,7 +197,7 @@ AI-proposed edits are never written straight to disk:
 - This is a local desktop tool, not a hosted service.
 - Terraform parsing is based on `terraform graph`, so the selected workspace still needs to be valid enough for Terraform to initialize and graph.
 - `Plan` and `Drift` run real `terraform plan` commands, so they need working provider credentials and a valid backend for the workspace.
-- Cost badges are very rough built-in estimates (small/default sizing, us-east-1) for architecture review only — not real pricing. Use Infracost or the AWS calculator for real numbers.
+- Cost badges are rough built-in estimates (us-east-1 on-demand) for architecture review only — not real pricing. They read sizing attributes from your HCL but ignore reserved/spot pricing beyond a flat discount, data transfer, and request-based charges. Use Infracost or the AWS calculator for real numbers.
 - The security scan requires `tfsec` on your `PATH` (`brew install tfsec`).
 - The app works best with local chat-oriented Ollama models. Smaller models such as `gemma3` or `llama3.2` generally feel faster in the UI.
 - File writes are based on the filename the model returns. The app resolves the target path and refuses to write outside the selected workspace (absolute paths and `../` traversal are blocked), and only accepts `.tf`, `.tfvars`, and `.hcl` filenames from code blocks.
@@ -187,6 +225,7 @@ Notes:
 
 ```text
 src/main/index.ts                        Electron main process, IPC handlers, terraform/tfsec/Ollama calls
+src/main/hcl.ts                          Pure HCL parsing: block ranges, attribute extraction
 src/preload/index.ts                     Preload bridge exposing safe APIs to the renderer
 src/preload/index.d.ts                   Types for the bridged API
 src/renderer/src/App.tsx                 Main React application
@@ -198,7 +237,7 @@ src/renderer/src/utils/
   dotParser.ts                           terraform graph DOT -> React Flow
   layout.ts                              Dagre auto-layout
   diff.ts                                LCS line diff
-  costEstimates.ts                       Rough monthly cost lookup table
+  costEstimates.ts                       Attribute-aware monthly cost model
 example-terraform/                       Example Terraform workspace for testing
 out/                                     Built output
 ```
@@ -216,6 +255,8 @@ out/                                     Built output
 | `workspace:readFile` | Single file read, used to build diffs |
 | `workspace:writeFile` | Sandboxed write inside the workspace |
 | `workspace:findResource` | Locate a resource's HCL block by graph label |
+| `workspace:resourceAttributes` | Extract cost-relevant attributes from every resource block |
+| `workspace:updateResource` | Replace a single HCL block in place, leaving the rest of the file untouched |
 | `ollama:listModels` / `ollama:generate` / `ollama:stream` | Local model access |
 
 ## Security Notes

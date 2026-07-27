@@ -5,6 +5,7 @@ import { exec } from 'child_process'
 import { promisify } from 'util'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { findHclBlockRange, extractHclBlock, parseResourcesInFile } from './hcl'
 
 const execAsync = promisify(exec)
 const OLLAMA_STREAM_EVENT = 'ollama:stream-event'
@@ -185,41 +186,19 @@ function resolveInsideWorkspace(cwd: string, filename: string): string | null {
   return targetPath
 }
 
-// Extract the HCL block for a graph node label like "aws_vpc.main",
-// "data.aws_ami.ubuntu", or "module.network" by brace matching.
-function extractHclBlock(content: string, label: string): string | null {
-  let headerRegex: RegExp
-  const dataMatch = label.match(/^data\.([\w-]+)\.([\w-]+)$/)
-  const moduleMatch = label.match(/^module\.([\w-]+)/)
-  const resourceMatch = label.match(/^([\w-]+)\.([\w-]+)$/)
+// Collect every resource block across the workspace with its cost attributes.
+async function collectResourceAttributes(
+  cwd: string
+): Promise<Array<{ address: string; type: string; attributes: Record<string, string> }>> {
+  const files = await collectTerraformFiles(cwd)
+  const resources: Array<{ address: string; type: string; attributes: Record<string, string> }> = []
 
-  if (dataMatch) {
-    headerRegex = new RegExp(`^\\s*data\\s+"${dataMatch[1]}"\\s+"${dataMatch[2]}"\\s*\\{`, 'm')
-  } else if (moduleMatch) {
-    headerRegex = new RegExp(`^\\s*module\\s+"${moduleMatch[1]}"\\s*\\{`, 'm')
-  } else if (resourceMatch) {
-    headerRegex = new RegExp(`^\\s*resource\\s+"${resourceMatch[1]}"\\s+"${resourceMatch[2]}"\\s*\\{`, 'm')
-  } else {
-    return null
+  for (const relPath of files) {
+    const content = await readFile(join(cwd, relPath), 'utf-8')
+    resources.push(...parseResourcesInFile(content))
   }
 
-  const match = headerRegex.exec(content)
-  if (!match) return null
-
-  const start = match.index
-  let depth = 0
-  let inString = false
-  for (let i = content.indexOf('{', start); i < content.length; i += 1) {
-    const char = content[i]
-    if (char === '"' && content[i - 1] !== '\\') inString = !inString
-    if (inString) continue
-    if (char === '{') depth += 1
-    if (char === '}') {
-      depth -= 1
-      if (depth === 0) return content.slice(start, i + 1).trim()
-    }
-  }
-  return null
+  return resources
 }
 
 function createWindow(): void {
@@ -341,6 +320,46 @@ app.whenReady().then(() => {
         }
       }
       return { success: true, data: null }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('workspace:resourceAttributes', async (_, cwd) => {
+    try {
+      const resources = await collectResourceAttributes(cwd)
+      return { success: true, data: resources }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('workspace:updateResource', async (_, { cwd, file, label, snippet }) => {
+    try {
+      const targetPath = resolveInsideWorkspace(cwd, file)
+      if (!targetPath) {
+        return { success: false, error: `Refusing to write outside the workspace: ${file}` }
+      }
+
+      const content = await readFile(targetPath, 'utf-8')
+      // Re-locate the block at write time rather than trusting stale offsets,
+      // in case the file changed since the panel was opened.
+      const range = findHclBlockRange(content, label)
+      if (!range) {
+        return {
+          success: false,
+          error: `Could not find the block for ${label} in ${file}. The file may have changed on disk — reopen the resource and try again.`
+        }
+      }
+
+      const trimmed = String(snippet).trim()
+      if (!trimmed) {
+        return { success: false, error: 'Cannot save an empty block.' }
+      }
+
+      const updated = content.slice(0, range.start) + trimmed + content.slice(range.end)
+      await writeFile(targetPath, updated, 'utf-8')
+      return { success: true }
     } catch (e: any) {
       return { success: false, error: e.message }
     }

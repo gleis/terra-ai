@@ -35,6 +35,8 @@ interface TerraApi {
   readWorkspaceFile: (cwd: string, filename: string) => Promise<{ success: boolean; data?: string; error?: string }>
   writeWorkspaceFile: (cwd: string, filename: string, content: string) => Promise<{ success: boolean; error?: string }>
   findResource: (cwd: string, label: string) => Promise<{ success: boolean; data?: { file: string; snippet: string } | null; error?: string }>
+  updateResource: (cwd: string, file: string, label: string, snippet: string) => Promise<{ success: boolean; error?: string }>
+  getResourceAttributes: (cwd: string) => Promise<{ success: boolean; data?: Array<{ address: string; type: string; attributes: Record<string, string> }>; error?: string }>
   runTerraformPlan: (cwd: string, refreshOnly: boolean) => Promise<{ success: boolean; data?: { changes: PlanChange[]; summary: string }; error?: string }>
   validateTerraform: (cwd: string, filename?: string) => Promise<{ success: boolean; data?: ValidationResult; error?: string }>
   runSecurityScan: (cwd: string) => Promise<{ success: boolean; data?: SecurityFinding[]; error?: string }>

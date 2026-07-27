@@ -11,6 +11,9 @@ const api = {
   readWorkspaceFile: (cwd: string, filename: string) => ipcRenderer.invoke('workspace:readFile', { cwd, filename }),
   writeWorkspaceFile: (cwd: string, filename: string, content: string) => ipcRenderer.invoke('workspace:writeFile', { cwd, filename, content }),
   findResource: (cwd: string, label: string) => ipcRenderer.invoke('workspace:findResource', { cwd, label }),
+  updateResource: (cwd: string, file: string, label: string, snippet: string) =>
+    ipcRenderer.invoke('workspace:updateResource', { cwd, file, label, snippet }),
+  getResourceAttributes: (cwd: string) => ipcRenderer.invoke('workspace:resourceAttributes', cwd),
   runTerraformPlan: (cwd: string, refreshOnly: boolean) => ipcRenderer.invoke('terraform:plan', { cwd, refreshOnly }),
   validateTerraform: (cwd: string, filename?: string) => ipcRenderer.invoke('terraform:validate', { cwd, filename }),
   runSecurityScan: (cwd: string) => ipcRenderer.invoke('security:scan', cwd),

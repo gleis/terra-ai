@@ -204,7 +204,7 @@ resource "aws_secretsmanager_secret" "db_secret" {
 
 # 4.2 RDS PostgreSQL Instance
 resource "aws_db_instance" "postgres" {
-  allocated_storage      = 20
+  allocated_storage      = 20000
   storage_type           = "gp2"
   engine                 = "postgres"
   engine_version         = "14.6"
@@ -363,8 +363,8 @@ resource "aws_eks_node_group" "workers" {
   subnet_ids      = aws_subnet.private[*].id
   instance_types  = ["t3.medium"]
   scaling_config {
-    desired_size = 2
-    max_size     = 4
+    desired_size = 25
+    max_size     = 40
     min_size     = 2
   }
   depends_on = [
