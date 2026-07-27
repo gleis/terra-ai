@@ -9,10 +9,17 @@ Terra-AI is an Electron desktop app for exploring Terraform workspaces locally. 
 - Opens a Terraform workspace from your machine.
 - Runs `terraform graph` against that workspace and converts the DOT output into a React Flow diagram.
 - Retries once with `terraform init -reconfigure` if graph generation fails on the first pass.
-- Reads `.tf` files and `terragrunt.hcl` from the selected workspace and injects that context into the first AI chat request.
+- Recursively reads `.tf`, `.tfvars`, and `terragrunt.hcl` files (including nested module directories) and injects that context into the first AI chat request.
 - Detects installed Ollama models and lets you choose from the locally available chat models.
 - Streams AI responses into the sidebar and automatically requests a continuation if a reply is cut off by the token limit.
-- Accepts AI responses that include full-file code blocks and can write those files back into the selected workspace.
+- Shows a diff review before any AI-proposed edit is written, including a multi-file review queue when a response touches several files.
+- Runs `terraform fmt` and `terraform validate` automatically after each applied edit and surfaces the result.
+- Visualizes `terraform plan`: nodes are colored by planned action (create / update / destroy / replace).
+- Checks for state drift with `terraform plan -refresh-only` and highlights drifted resources.
+- Runs a tfsec security scan (if installed) and badges affected nodes with their findings.
+- Shows a node detail panel with the resource's HCL source, plan status, rough monthly cost estimate, and security findings.
+- Filters/highlights graph nodes with a search box.
+- Persists chat history per workspace across app restarts.
 
 ## Tech Stack
 
@@ -79,10 +86,11 @@ npm run dev
 3. Choose a directory that contains Terraform files.
 4. Terra-AI runs `terraform graph` in that directory and renders the graph.
 5. Pick a local Ollama chat model from the AI Insights header.
-6. Click a node to ask for an explanation of that resource.
-7. Use the AI sidebar to ask architecture or Terraform questions.
-8. Use `Clear Chat` in the AI Insights header to start a new conversation.
-9. If the AI returns a full-file code block with a leading filename comment, click `Apply Edit` to write it back to disk.
+6. Click a node to open its detail panel (source block, plan status, cost, findings) and use `Explain with AI` from there.
+7. Use `Plan` to color the graph by planned changes, `Drift` to check for state drift, and `Scan` to run tfsec.
+8. Use the search box in the header to filter large graphs.
+9. Use the AI sidebar to ask architecture or Terraform questions.
+10. If the AI returns full-file code blocks with leading filename comments, click `Review & Apply` (or `Review all changes` for multi-file responses) to inspect the diff before writing to disk. Files are formatted and validated after each write.
 
 ## How The AI Integration Works
 
@@ -98,7 +106,9 @@ npm run dev
 
 - This is a local desktop tool, not a hosted service.
 - Terraform parsing is based on `terraform graph`, so the selected workspace still needs to be valid enough for Terraform to initialize and graph.
-- Workspace context loading currently reads only top-level `.tf` files plus `terragrunt.hcl` from the chosen directory. It does not recurse into nested module directories.
+- `Plan` and `Drift` run real `terraform plan` commands, so they need working provider credentials and a valid backend for the workspace.
+- Cost badges are very rough built-in estimates (small/default sizing, us-east-1) for architecture review only — not real pricing. Use Infracost or the AWS calculator for real numbers.
+- The security scan requires `tfsec` on your `PATH` (`brew install tfsec`).
 - The app works best with local chat-oriented Ollama models. Smaller models such as `gemma3` or `llama3.2` generally feel faster in the UI.
 - File writes are based on the filename the model returns. The app resolves the target path and refuses to write outside the selected workspace (absolute paths and `../` traversal are blocked), and only accepts `.tf`, `.tfvars`, and `.hcl` filenames from code blocks.
 

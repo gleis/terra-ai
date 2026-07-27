@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
-import ReactFlow, { 
-  Background, 
-  Controls, 
+import { useState, useEffect, useMemo, useRef } from 'react'
+import ReactFlow, {
+  Background,
+  Controls,
   MiniMap,
   Handle,
   Position,
@@ -12,13 +12,49 @@ import 'reactflow/dist/style.css'
 
 import { parseDotToReactFlow } from './utils/dotParser'
 import { getLayoutedElements } from './utils/layout'
+import { estimateMonthlyCost } from './utils/costEstimates'
+import DiffModal, { PendingEdit } from './components/DiffModal'
+import NodeDetailPanel from './components/NodeDetailPanel'
+import type { SecurityFinding } from './types'
+
+const PLAN_BORDER: Record<string, string> = {
+  create: 'border-emerald-400',
+  update: 'border-amber-400',
+  delete: 'border-rose-500',
+  replace: 'border-rose-500',
+  drift: 'border-fuchsia-400'
+}
 
 // Use a robust custom node to prevent text spilling on long resource names
 const TerraformNodeComponent = ({ data }: any) => {
+  const planBorder = data.planAction ? PLAN_BORDER[data.planAction] : null
   return (
-    <div className="px-4 py-3 shadow-[0_4px_12px_rgba(0,0,0,0.5)] rounded-lg bg-slate-800 border border-slate-600 hover:border-indigo-500 text-slate-200 text-xs font-mono max-w-[280px] break-words text-center transition-colors cursor-pointer">
+    <div
+      className={`px-4 py-3 shadow-[0_4px_12px_rgba(0,0,0,0.5)] rounded-lg bg-slate-800 border ${
+        planBorder || 'border-slate-600'
+      } hover:border-indigo-500 text-slate-200 text-xs font-mono max-w-[280px] break-words text-center transition-all cursor-pointer ${
+        data.dimmed ? 'opacity-20' : ''
+      }`}
+    >
       <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-indigo-400 border-none" />
       {data.label}
+      {(data.cost !== null || data.findingCount > 0) && (
+        <div className="mt-1.5 flex justify-center gap-1.5">
+          {data.cost !== null && (
+            <span
+              className="rounded bg-sky-500/15 px-1 py-0.5 text-[10px] text-sky-300"
+              title="Very rough monthly estimate"
+            >
+              ~${data.cost}/mo
+            </span>
+          )}
+          {data.findingCount > 0 && (
+            <span className="rounded bg-rose-500/15 px-1 py-0.5 text-[10px] text-rose-300">
+              ⚠ {data.findingCount}
+            </span>
+          )}
+        </div>
+      )}
       <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-indigo-400 border-none" />
     </div>
   )
@@ -166,12 +202,39 @@ function App() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [magicQuery, setMagicQuery] = useState('')
 
+  // Feature state: plan overlay, search, diff review, node detail, security scan
+  const [planChanges, setPlanChanges] = useState<Map<string, string>>(new Map())
+  const [planSummary, setPlanSummary] = useState<string | null>(null)
+  const [planLoading, setPlanLoading] = useState<false | 'plan' | 'drift'>(false)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [pendingEdits, setPendingEdits] = useState<PendingEdit[] | null>(null)
+  const [applyBusy, setApplyBusy] = useState(false)
+  const [validationNotice, setValidationNotice] = useState<string | null>(null)
+  const [securityFindings, setSecurityFindings] = useState<SecurityFinding[]>([])
+  const [scanLoading, setScanLoading] = useState(false)
+  const [detailNode, setDetailNode] = useState<{
+    label: string
+    file: string | null
+    snippet: string | null
+    loading: boolean
+  } | null>(null)
+
   useEffect(() => {
     const lastWorkspace = localStorage.getItem('terra-ai-last-workspace')
     if (lastWorkspace) {
       loadWorkspace(lastWorkspace)
     }
   }, [])
+
+  // Persist chat per workspace so conversations survive reloads
+  useEffect(() => {
+    if (!cwd) return
+    try {
+      localStorage.setItem(`terra-ai-chat:${cwd}`, JSON.stringify(messages))
+    } catch {
+      // localStorage full or unavailable — persistence is best-effort
+    }
+  }, [messages, cwd])
 
   useEffect(() => {
     void refreshOllamaStatus()
@@ -406,6 +469,22 @@ function App() {
       setCwd(path)
       localStorage.setItem('terra-ai-last-workspace', path)
 
+      // Reset per-workspace overlays; restore persisted chat for this workspace
+      setPlanChanges(new Map())
+      setPlanSummary(null)
+      setSecurityFindings([])
+      setDetailNode(null)
+      try {
+        const savedChat = localStorage.getItem(`terra-ai-chat:${path}`)
+        if (savedChat) {
+          const parsed = JSON.parse(savedChat) as ChatMessage[]
+          setMessages(parsed.filter((m) => m.content && m.content.trim().length > 0))
+        } else {
+          setMessages([])
+        }
+      } catch {
+        setMessages([])
+      }
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -420,22 +499,108 @@ function App() {
     }
   }
 
-  const handleApplyEdit = async (filename: string, content: string) => {
+  // Open the diff review modal for one or more proposed edits
+  const reviewEdits = async (edits: Array<{ filename: string; content: string }>) => {
+    if (!cwd) {
+      setError('No workspace loaded')
+      return
+    }
+    const withOldContent: PendingEdit[] = []
+    for (const edit of edits) {
+      const res = await window.api.readWorkspaceFile(cwd, edit.filename)
+      withOldContent.push({
+        filename: edit.filename,
+        oldContent: res.success ? res.data || '' : '',
+        newContent: edit.content
+      })
+    }
+    setPendingEdits(withOldContent)
+  }
+
+  // Write a reviewed edit, then fmt + validate and surface the result
+  const applyReviewedEdit = async (edit: PendingEdit): Promise<boolean> => {
+    if (!cwd) return false
+    setApplyBusy(true)
     try {
-      if (!cwd) throw new Error("No workspace loaded")
-      setLoading(true)
-      const res = await window.api.writeWorkspaceFile(cwd, filename, content)
+      const res = await window.api.writeWorkspaceFile(cwd, edit.filename, edit.newContent)
       if (!res.success) throw new Error(res.error)
+
+      const validation = await window.api.validateTerraform(cwd, edit.filename)
+      if (validation.success && validation.data) {
+        if (!validation.data.valid) {
+          setValidationNotice(
+            `Saved ${edit.filename}, but validation failed:\n${validation.data.diagnostics.join('\n')}`
+          )
+        } else {
+          setValidationNotice(
+            `Saved ${edit.filename} — terraform validate passed${validation.data.formatted ? ', file formatted' : ''}.`
+          )
+        }
+      } else {
+        setValidationNotice(`Saved ${edit.filename} (validation unavailable: ${validation.error || 'unknown'})`)
+      }
+
       await loadWorkspace(cwd)
+      return true
     } catch (err: any) {
       setError(`Failed to save file: ${err.message}`)
+      return false
     } finally {
-      setLoading(false)
+      setApplyBusy(false)
+    }
+  }
+
+  const runPlan = async (refreshOnly: boolean) => {
+    if (!cwd || planLoading) return
+    setPlanLoading(refreshOnly ? 'drift' : 'plan')
+    setError(null)
+    try {
+      const res = await window.api.runTerraformPlan(cwd, refreshOnly)
+      if (!res.success || !res.data) throw new Error(res.error || 'terraform plan failed')
+
+      const changeMap = new Map<string, string>()
+      for (const change of res.data.changes) {
+        if (change.action === 'noop' || change.action === 'read') continue
+        changeMap.set(change.address, change.action)
+      }
+      setPlanChanges(changeMap)
+      setPlanSummary(
+        refreshOnly
+          ? changeMap.size === 0
+            ? 'No drift detected — state matches configuration.'
+            : `Drift detected in ${changeMap.size} resource${changeMap.size > 1 ? 's' : ''}.`
+          : res.data.summary || `${changeMap.size} planned change${changeMap.size === 1 ? '' : 's'}.`
+      )
+    } catch (err: any) {
+      setError(`Plan failed: ${err.message}`)
+    } finally {
+      setPlanLoading(false)
+    }
+  }
+
+  const runScan = async () => {
+    if (!cwd || scanLoading) return
+    setScanLoading(true)
+    setError(null)
+    try {
+      const res = await window.api.runSecurityScan(cwd)
+      if (!res.success || !res.data) throw new Error(res.error || 'scan failed')
+      setSecurityFindings(res.data)
+      setPlanSummary(
+        res.data.length === 0
+          ? 'Security scan clean — no findings.'
+          : `Security scan: ${res.data.length} finding${res.data.length > 1 ? 's' : ''}.`
+      )
+    } catch (err: any) {
+      setError(`Security scan: ${err.message}`)
+    } finally {
+      setScanLoading(false)
     }
   }
 
   const clearConversation = () => {
     if (aiLoading) return
+    if (cwd) localStorage.removeItem(`terra-ai-chat:${cwd}`)
     setMessages([])
     setPrompt('')
     activeRequestIdRef.current = null
@@ -493,7 +658,8 @@ function App() {
         systemContext.push({
           id: 'workspace-context',
           role: 'system',
-          content: `You are an expert infrastructure AI analyzing the following Terraform workspace snapshot:\n\n${trimmedContext}\n\nRESPONSE STYLE:\n- Use markdown with short headings and bullets.\n- Use **bold** for key findings.\n- Use __underlines__ only for warnings or high-risk items.\n- Use ==highlights== for concrete actions.\n- Finish all major sections without trailing off.\n\nIMPORTANT CODE EDITING RULES:\n1. If you propose a code edit, you MUST encapsulate it in a markdown code block AND ensure the very first line of the code block is a continuous comment indicating the target filename relative to the workspace root (e.g. # main.tf or # vpc/main.tf).\n2. You MUST output the ENTIRE contents of the file, including all existing code unchanged. DO NOT omit existing code and DO NOT use placeholder comments. Produce the full file from top to bottom so the system can safely overwrite.`
+          content: `You are an expert infrastructure AI analyzing the following Terraform workspace snapshot:\n\n${trimmedContext}\n\nRESPONSE STYLE:\n- Use markdown with short headings and bullets.\n- Use **bold** for key findings.\n- Use __underlines__ only for warnings or high-risk items.\n- Use ==highlights== for concrete actions.\n- Finish all major sections without trailing off.\n\nIMPORTANT CODE EDITING RULES:\n1. If you propose a code edit, you MUST encapsulate it in a markdown code block AND ensure the very first line of the code block is a continuous comment indicating the target filename relative to the workspace root (e.g. # main.tf or # vpc/main.tf).\n2. You MUST output the ENTIRE contents of the file, including all existing code unchanged. DO NOT omit existing code and DO NOT use placeholder comments. Produce the full file from top to bottom so the system can safely overwrite.
+3. You MAY propose edits to multiple files in one response. Use a separate code block per file, each starting with its own filename comment.`
         })
       }
     }
@@ -575,9 +741,85 @@ function App() {
     await submitQuery(prompt)
   }
 
+  // Clicking a node opens the detail panel (source, plan status, cost, findings)
   const onNodeClick = async (_: React.MouseEvent, node: any) => {
-    const query = `Explain what ${node.data.label} is used for in this architecture and point out any potential security or cost optimization best practices.`
+    const label = node.data.label as string
+    setDetailNode({ label, file: null, snippet: null, loading: true })
+    if (!cwd) {
+      setDetailNode({ label, file: null, snippet: null, loading: false })
+      return
+    }
+    const res = await window.api.findResource(cwd, label)
+    setDetailNode((current) => {
+      if (!current || current.label !== label) return current
+      return {
+        label,
+        file: res.success && res.data ? res.data.file : null,
+        snippet: res.success && res.data ? res.data.snippet : null,
+        loading: false
+      }
+    })
+  }
+
+  const explainNode = async (label: string) => {
+    setDetailNode(null)
+    const query = `Explain what ${label} is used for in this architecture and point out any potential security or cost optimization best practices.`
     await submitQuery(query)
+  }
+
+  // Findings grouped by resource address for node badges / detail panel
+  const findingsByResource = useMemo(() => {
+    const map = new Map<string, SecurityFinding[]>()
+    for (const finding of securityFindings) {
+      if (!finding.resource) continue
+      const list = map.get(finding.resource) || []
+      list.push(finding)
+      map.set(finding.resource, list)
+    }
+    return map
+  }, [securityFindings])
+
+  const lookupByLabel = <T,>(map: Map<string, T>, label: string): T | undefined => {
+    if (map.has(label)) return map.get(label)
+    // Handle indexed addresses like aws_instance.web[0]
+    for (const [key, value] of map) {
+      if (key.startsWith(`${label}[`) || key.startsWith(`${label}.`)) return value
+    }
+    return undefined
+  }
+
+  // Decorate graph nodes with plan actions, cost estimates, findings, and search dimming
+  const decoratedNodes = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase()
+    return nodes.map((node) => {
+      const label = String(node.data?.label || '')
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          planAction: lookupByLabel(planChanges, label) || null,
+          cost: estimateMonthlyCost(label),
+          findingCount: (lookupByLabel(findingsByResource, label) || []).length,
+          dimmed: query.length > 0 && !label.toLowerCase().includes(query)
+        }
+      }
+    })
+  }, [nodes, planChanges, findingsByResource, searchTerm])
+
+  // Extract every filename-tagged code block from an assistant message
+  const extractEditsFromContent = (content: string): Array<{ filename: string; content: string }> => {
+    const edits: Array<{ filename: string; content: string }> = []
+    const blocks = content.match(/```[\s\S]*?```/g) || []
+    for (const block of blocks) {
+      const lines = block.split('\n')
+      const code = lines.slice(1, -1).join('\n')
+      const firstLine = code.split('\n', 1)[0] || ''
+      const match = firstLine.match(/^#\s*(\S+\.(?:tf|tfvars|hcl))\s*$/)
+      if (match) {
+        edits.push({ filename: match[1], content: code })
+      }
+    }
+    return edits
   }
 
   const renderMessageContent = (content: string) => {
@@ -709,12 +951,12 @@ function App() {
             <div className="flex justify-between items-center bg-slate-950 px-3 py-2 border-b border-slate-700">
               <span className="text-xs text-slate-400 font-mono truncate">{codeFilePath || langInfo.replace('```', '') || 'code'}</span>
               {codeFilePath && (
-                <button 
-                  onClick={() => handleApplyEdit(codeFilePath, code)}
+                <button
+                  onClick={() => void reviewEdits([{ filename: codeFilePath, content: code }])}
                   disabled={loading}
                   className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1 rounded transition-colors disabled:opacity-50 font-medium"
                 >
-                  Apply Edit
+                  Review &amp; Apply
                 </button>
               )}
             </div>
@@ -746,18 +988,53 @@ function App() {
             <h1 className="text-slate-200 font-medium tracking-wide">Terra-AI</h1>
           </div>
           <div className="flex items-center space-x-2">
-            {cwd && (
-              <button 
-                onClick={() => loadWorkspace(cwd)} 
-                disabled={loading}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-4 py-1.5 rounded-md text-sm font-medium transition-colors focus:ring-2 focus:ring-slate-500/50 disabled:opacity-50 flex items-center gap-2"
-                title="Reload architecture graph from disk"
-              >
-                Refresh
-              </button>
+            {cwd && nodes.length > 0 && (
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Filter nodes…"
+                className="w-36 bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded-md px-2.5 py-1.5 outline-none focus:border-indigo-500 placeholder:text-slate-600"
+              />
             )}
-            <button 
-              onClick={loadTerraform} 
+            {cwd && (
+              <>
+                <button
+                  onClick={() => void runPlan(false)}
+                  disabled={loading || Boolean(planLoading)}
+                  title="Run terraform plan and color nodes by create/update/destroy"
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  {planLoading === 'plan' ? 'Planning…' : 'Plan'}
+                </button>
+                <button
+                  onClick={() => void runPlan(true)}
+                  disabled={loading || Boolean(planLoading)}
+                  title="Check for drift between state and real infrastructure (terraform plan -refresh-only)"
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  {planLoading === 'drift' ? 'Checking…' : 'Drift'}
+                </button>
+                <button
+                  onClick={() => void runScan()}
+                  disabled={loading || scanLoading}
+                  title="Run tfsec security scan and badge affected nodes"
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+                >
+                  {scanLoading ? 'Scanning…' : 'Scan'}
+                </button>
+                <button
+                  onClick={() => loadWorkspace(cwd)}
+                  disabled={loading}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-md text-sm font-medium transition-colors focus:ring-2 focus:ring-slate-500/50 disabled:opacity-50"
+                  title="Reload architecture graph from disk"
+                >
+                  Refresh
+                </button>
+              </>
+            )}
+            <button
+              onClick={loadTerraform}
               disabled={loading}
               className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-md text-sm font-medium transition-colors focus:ring-2 focus:ring-indigo-500/50 disabled:opacity-50"
             >
@@ -765,6 +1042,28 @@ function App() {
             </button>
           </div>
         </header>
+
+        {(planSummary || validationNotice) && (
+          <div className="border-b border-white/5 bg-slate-900/70 px-4 py-2 flex items-start justify-between gap-3 z-10">
+            <div className="min-w-0 space-y-1">
+              {planSummary && <p className="text-xs text-slate-300">{planSummary}</p>}
+              {validationNotice && (
+                <p className="text-xs text-slate-400 whitespace-pre-wrap">{validationNotice}</p>
+              )}
+            </div>
+            <button
+              onClick={() => {
+                setPlanSummary(null)
+                setValidationNotice(null)
+                setPlanChanges(new Map())
+              }}
+              className="text-slate-500 hover:text-slate-300 text-xs shrink-0"
+              title="Dismiss and clear plan overlay"
+            >
+              Clear
+            </button>
+          </div>
+        )}
 
         {/* Canvas */}
         <main className="flex-1 relative">
@@ -784,7 +1083,7 @@ function App() {
           )}
 
           <ReactFlow
-            nodes={nodes}
+            nodes={decoratedNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
@@ -803,8 +1102,30 @@ function App() {
             />
           </ReactFlow>
 
+          {detailNode && (
+            <NodeDetailPanel
+              label={detailNode.label}
+              file={detailNode.file}
+              snippet={detailNode.snippet}
+              loading={detailNode.loading}
+              planAction={lookupByLabel(planChanges, detailNode.label) || null}
+              findings={lookupByLabel(findingsByResource, detailNode.label) || []}
+              onExplain={() => void explainNode(detailNode.label)}
+              onClose={() => setDetailNode(null)}
+            />
+          )}
+
+          {pendingEdits && pendingEdits.length > 0 && (
+            <DiffModal
+              edits={pendingEdits}
+              busy={applyBusy}
+              onApply={applyReviewedEdit}
+              onClose={() => setPendingEdits(null)}
+            />
+          )}
+
           {cwd && (
-             <button 
+             <button
                onClick={() => setShowAddModal(true)}
                className="absolute bottom-6 right-6 z-40 bg-indigo-600 hover:bg-indigo-500 text-white w-12 h-12 rounded-full shadow-[0_0_20px_rgba(79,70,229,0.5)] flex items-center justify-center text-3xl font-light transition-transform hover:scale-110"
                title="Magic Add Resource"
@@ -960,6 +1281,20 @@ function App() {
               >
                 {m.role === 'user' ? <span className="whitespace-pre-wrap leading-7 break-words [overflow-wrap:anywhere]">{m.content}</span> : <div className="w-full min-w-0 break-words [overflow-wrap:anywhere]">{m.content ? renderMessageContent(m.content) : <span className="text-slate-500">Waiting for first tokens...</span>}</div>}
               </div>
+              {m.role === 'assistant' &&
+                (() => {
+                  const edits = extractEditsFromContent(m.content)
+                  if (edits.length < 2) return null
+                  return (
+                    <button
+                      onClick={() => void reviewEdits(edits)}
+                      disabled={loading}
+                      className="mt-2 bg-emerald-600/20 border border-emerald-500/40 text-emerald-200 text-xs px-3 py-1.5 rounded-lg hover:bg-emerald-600/30 disabled:opacity-50 font-medium"
+                    >
+                      Review all changes ({edits.length} files)
+                    </button>
+                  )
+                })()}
             </div>
           ))}
           {messages.length === 0 && (
