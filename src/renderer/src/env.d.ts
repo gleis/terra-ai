@@ -26,6 +26,12 @@ interface Window {
       cwd: string,
       label: string
     ) => Promise<{ success: boolean; data?: { file: string; snippet: string } | null; error?: string }>
+    updateResource: (
+      cwd: string,
+      file: string,
+      label: string,
+      snippet: string
+    ) => Promise<{ success: boolean; error?: string }>
     runTerraformPlan: (
       cwd: string,
       refreshOnly: boolean

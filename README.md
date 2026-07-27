@@ -20,6 +20,7 @@ Everything runs on your machine. No workspace content is sent to a hosted servic
 - Checks for state drift with `terraform plan -refresh-only` and highlights drifted resources.
 - Runs a tfsec security scan (if installed) and badges affected nodes with their findings.
 - Shows a node detail panel with the resource's HCL source, plan status, rough monthly cost estimate, and security findings.
+- Lets you edit a resource's HCL directly in that panel and write it back to its file, with formatting and validation on save.
 - Filters/highlights graph nodes with a search box.
 - Persists chat history per workspace across app restarts.
 
@@ -97,10 +98,11 @@ npm run dev
 4. Terra-AI runs `terraform graph` in that directory and renders the graph.
 5. Pick a local Ollama chat model from the AI Insights header.
 6. Click a node to open its detail panel (source block, plan status, cost, findings) and use `Explain with AI` from there.
-7. Use `Plan` to color the graph by planned changes, `Drift` to check for state drift, and `Scan` to run tfsec.
-8. Use the search box in the header to filter large graphs.
-9. Use the AI sidebar to ask architecture or Terraform questions.
-10. If the AI returns full-file code blocks with leading filename comments, click `Review & Apply` (or `Review all changes` for multi-file responses) to inspect the diff before writing to disk. Files are formatted and validated after each write.
+7. Use `Edit` in that panel to change the resource's HCL directly and save it back to its file.
+8. Use `Plan` to color the graph by planned changes, `Drift` to check for state drift, and `Scan` to run tfsec.
+9. Use the search box in the header to filter large graphs.
+10. Use the AI sidebar to ask architecture or Terraform questions.
+11. If the AI returns full-file code blocks with leading filename comments, click `Review & Apply` (or `Review all changes` for multi-file responses) to inspect the diff before writing to disk. Files are formatted and validated after each write.
 
 ## Feature Reference
 
@@ -134,6 +136,20 @@ Clicking a node opens a panel showing:
 - An `Explain with AI` button that sends the resource to the AI sidebar
 
 Resources defined inside external modules may not have a locatable source block; the panel says so rather than guessing.
+
+### Editing A Resource In Place
+
+`Edit` in the detail panel turns the source block into an editor:
+
+- `Save Changes` (or ⌘/Ctrl + Enter) writes the block back into its file, then runs `terraform fmt` on that file and `terraform validate` on the workspace.
+- `Cancel` (or Escape) discards the draft. An `unsaved changes` badge appears while the draft differs from what is on disk.
+- Tab inserts two spaces instead of moving focus.
+- After a successful save the graph reloads and the panel re-reads the block from disk, so you see the formatted result.
+- If validation fails, the error is shown in the panel. The edit is still written — this reports the problem rather than silently reverting your work.
+
+The block is re-located by resource address at save time rather than by remembered offsets, so a file that changed on disk since the panel was opened produces a clear error instead of a corrupted write. Only the targeted block is rewritten; everything else in the file is left byte-for-byte intact.
+
+Unlike AI-proposed edits, your own edits are written directly without a diff review — you are the author, and the diff gate exists for changes you did not write.
 
 ### Reviewing AI Edits
 
@@ -216,6 +232,7 @@ out/                                     Built output
 | `workspace:readFile` | Single file read, used to build diffs |
 | `workspace:writeFile` | Sandboxed write inside the workspace |
 | `workspace:findResource` | Locate a resource's HCL block by graph label |
+| `workspace:updateResource` | Replace a single HCL block in place, leaving the rest of the file untouched |
 | `ollama:listModels` / `ollama:generate` / `ollama:stream` | Local model access |
 
 ## Security Notes

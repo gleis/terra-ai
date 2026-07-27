@@ -185,9 +185,9 @@ function resolveInsideWorkspace(cwd: string, filename: string): string | null {
   return targetPath
 }
 
-// Extract the HCL block for a graph node label like "aws_vpc.main",
-// "data.aws_ami.ubuntu", or "module.network" by brace matching.
-function extractHclBlock(content: string, label: string): string | null {
+// Locate the character range of the HCL block for a graph node label like
+// "aws_vpc.main", "data.aws_ami.ubuntu", or "module.network" by brace matching.
+function findHclBlockRange(content: string, label: string): { start: number; end: number } | null {
   let headerRegex: RegExp
   const dataMatch = label.match(/^data\.([\w-]+)\.([\w-]+)$/)
   const moduleMatch = label.match(/^module\.([\w-]+)/)
@@ -206,20 +206,28 @@ function extractHclBlock(content: string, label: string): string | null {
   const match = headerRegex.exec(content)
   if (!match) return null
 
-  const start = match.index
+  // The regex may match leading whitespace/newline; start at the first non-space
+  let start = match.index
+  while (start < content.length && /\s/.test(content[start])) start += 1
+
   let depth = 0
   let inString = false
-  for (let i = content.indexOf('{', start); i < content.length; i += 1) {
+  for (let i = content.indexOf('{', match.index); i < content.length; i += 1) {
     const char = content[i]
     if (char === '"' && content[i - 1] !== '\\') inString = !inString
     if (inString) continue
     if (char === '{') depth += 1
     if (char === '}') {
       depth -= 1
-      if (depth === 0) return content.slice(start, i + 1).trim()
+      if (depth === 0) return { start, end: i + 1 }
     }
   }
   return null
+}
+
+function extractHclBlock(content: string, label: string): string | null {
+  const range = findHclBlockRange(content, label)
+  return range ? content.slice(range.start, range.end).trim() : null
 }
 
 function createWindow(): void {
@@ -341,6 +349,37 @@ app.whenReady().then(() => {
         }
       }
       return { success: true, data: null }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('workspace:updateResource', async (_, { cwd, file, label, snippet }) => {
+    try {
+      const targetPath = resolveInsideWorkspace(cwd, file)
+      if (!targetPath) {
+        return { success: false, error: `Refusing to write outside the workspace: ${file}` }
+      }
+
+      const content = await readFile(targetPath, 'utf-8')
+      // Re-locate the block at write time rather than trusting stale offsets,
+      // in case the file changed since the panel was opened.
+      const range = findHclBlockRange(content, label)
+      if (!range) {
+        return {
+          success: false,
+          error: `Could not find the block for ${label} in ${file}. The file may have changed on disk — reopen the resource and try again.`
+        }
+      }
+
+      const trimmed = String(snippet).trim()
+      if (!trimmed) {
+        return { success: false, error: 'Cannot save an empty block.' }
+      }
+
+      const updated = content.slice(0, range.start) + trimmed + content.slice(range.end)
+      await writeFile(targetPath, updated, 'utf-8')
+      return { success: true }
     } catch (e: any) {
       return { success: false, error: e.message }
     }
