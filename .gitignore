@@ -31,3 +31,4 @@ example-terraform/terraform.tfstate.*
 example-terraform/crash.log
 example-terraform/crash.*.log
 example-terraform/.terraform.tfstate.lock.info
+run-dev.command

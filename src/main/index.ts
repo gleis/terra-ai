@@ -147,6 +147,81 @@ async function generateOllamaResponse(payload: Record<string, unknown>): Promise
   return data
 }
 
+const SKIP_DIRS = new Set(['.terraform', '.git', 'node_modules'])
+const MAX_TF_FILES = 200
+
+// Recursively collect .tf / .tfvars / terragrunt.hcl files, returning
+// workspace-relative paths. Skips vendored/hidden directories.
+async function collectTerraformFiles(cwd: string, subdir = '', depth = 0): Promise<string[]> {
+  if (depth > 6) return []
+  const results: string[] = []
+  const entries = await readdir(join(cwd, subdir), { withFileTypes: true })
+
+  for (const entry of entries) {
+    if (results.length >= MAX_TF_FILES) break
+    const relPath = subdir ? join(subdir, entry.name) : entry.name
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue
+      results.push(...(await collectTerraformFiles(cwd, relPath, depth + 1)))
+    } else if (
+      extname(entry.name) === '.tf' ||
+      extname(entry.name) === '.tfvars' ||
+      entry.name === 'terragrunt.hcl'
+    ) {
+      results.push(relPath)
+    }
+  }
+  return results
+}
+
+// Resolve an untrusted relative filename inside the workspace, or null if it escapes.
+function resolveInsideWorkspace(cwd: string, filename: string): string | null {
+  const safeFilename = String(filename).replace(/^(\/|\\)+/, '')
+  const workspaceRoot = resolve(cwd)
+  const targetPath = resolve(workspaceRoot, safeFilename)
+  if (targetPath !== workspaceRoot && !targetPath.startsWith(workspaceRoot + sep)) {
+    return null
+  }
+  return targetPath
+}
+
+// Extract the HCL block for a graph node label like "aws_vpc.main",
+// "data.aws_ami.ubuntu", or "module.network" by brace matching.
+function extractHclBlock(content: string, label: string): string | null {
+  let headerRegex: RegExp
+  const dataMatch = label.match(/^data\.([\w-]+)\.([\w-]+)$/)
+  const moduleMatch = label.match(/^module\.([\w-]+)/)
+  const resourceMatch = label.match(/^([\w-]+)\.([\w-]+)$/)
+
+  if (dataMatch) {
+    headerRegex = new RegExp(`^\\s*data\\s+"${dataMatch[1]}"\\s+"${dataMatch[2]}"\\s*\\{`, 'm')
+  } else if (moduleMatch) {
+    headerRegex = new RegExp(`^\\s*module\\s+"${moduleMatch[1]}"\\s*\\{`, 'm')
+  } else if (resourceMatch) {
+    headerRegex = new RegExp(`^\\s*resource\\s+"${resourceMatch[1]}"\\s+"${resourceMatch[2]}"\\s*\\{`, 'm')
+  } else {
+    return null
+  }
+
+  const match = headerRegex.exec(content)
+  if (!match) return null
+
+  const start = match.index
+  let depth = 0
+  let inString = false
+  for (let i = content.indexOf('{', start); i < content.length; i += 1) {
+    const char = content[i]
+    if (char === '"' && content[i - 1] !== '\\') inString = !inString
+    if (inString) continue
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) return content.slice(start, i + 1).trim()
+    }
+  }
+  return null
+}
+
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -227,13 +302,12 @@ app.whenReady().then(() => {
 
   ipcMain.handle('workspace:readFiles', async (_, cwd) => {
     try {
-      const files = await readdir(cwd)
-      const tfFiles = files.filter(f => extname(f) === '.tf' || f === 'terragrunt.hcl')
-      
+      const tfFiles = await collectTerraformFiles(cwd)
+
       let contextStr = ''
-      for (const file of tfFiles) {
-        const content = await readFile(join(cwd, file), 'utf-8')
-        contextStr += `\n--- ${file} ---\n${content}\n`
+      for (const relPath of tfFiles) {
+        const content = await readFile(join(cwd, relPath), 'utf-8')
+        contextStr += `\n--- ${relPath} ---\n${content}\n`
       }
       return { success: true, data: contextStr }
     } catch (e: any) {
@@ -241,16 +315,171 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.handle('workspace:readFile', async (_, { cwd, filename }) => {
+    try {
+      const targetPath = resolveInsideWorkspace(cwd, filename)
+      if (!targetPath) {
+        return { success: false, error: `Refusing to read outside the workspace: ${filename}` }
+      }
+      const content = await readFile(targetPath, 'utf-8')
+      return { success: true, data: content }
+    } catch (e: any) {
+      // Missing file is a normal case (AI proposing a brand-new file)
+      if (e.code === 'ENOENT') return { success: true, data: '' }
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('workspace:findResource', async (_, { cwd, label }) => {
+    try {
+      const tfFiles = await collectTerraformFiles(cwd)
+      for (const relPath of tfFiles) {
+        const content = await readFile(join(cwd, relPath), 'utf-8')
+        const snippet = extractHclBlock(content, label)
+        if (snippet) {
+          return { success: true, data: { file: relPath, snippet } }
+        }
+      }
+      return { success: true, data: null }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('terraform:plan', async (_, { cwd, refreshOnly }) => {
+    const pathPrefix = process.platform === 'darwin'
+      ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && '
+      : ''
+    const flags = refreshOnly ? ' -refresh-only' : ''
+    const cmd = `${pathPrefix}terraform plan -input=false -lock=false -no-color -json${flags}`
+
+    const runPlan = async (): Promise<{ stdout: string }> =>
+      execAsync(cmd, { cwd, maxBuffer: 64 * 1024 * 1024 })
+
+    try {
+      let stdout: string
+      try {
+        ;({ stdout } = await runPlan())
+      } catch (e: any) {
+        // terraform plan exits non-zero on errors; try an init once, then retry
+        await execAsync(`${pathPrefix}terraform init -reconfigure -input=false`, { cwd })
+        ;({ stdout } = await runPlan())
+      }
+
+      const changes: Array<{ address: string; action: string }> = []
+      let summary = ''
+      for (const line of stdout.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        let parsed: any
+        try {
+          parsed = JSON.parse(trimmed)
+        } catch {
+          continue
+        }
+        if (parsed.type === 'planned_change' && parsed.change?.resource?.addr) {
+          changes.push({ address: parsed.change.resource.addr, action: parsed.change.action })
+        }
+        if (parsed.type === 'resource_drift' && parsed.change?.resource?.addr) {
+          changes.push({ address: parsed.change.resource.addr, action: 'drift' })
+        }
+        if (parsed.type === 'change_summary' && typeof parsed['@message'] === 'string') {
+          summary = parsed['@message']
+        }
+      }
+      return { success: true, data: { changes, summary } }
+    } catch (e: any) {
+      return { success: false, error: e.stderr || e.message }
+    }
+  })
+
+  ipcMain.handle('terraform:validate', async (_, { cwd, filename }) => {
+    const pathPrefix = process.platform === 'darwin'
+      ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && '
+      : ''
+    const result: { formatted: boolean; valid: boolean; diagnostics: string[] } = {
+      formatted: false,
+      valid: true,
+      diagnostics: []
+    }
+
+    if (filename) {
+      const targetPath = resolveInsideWorkspace(cwd, filename)
+      if (targetPath) {
+        try {
+          await execAsync(`${pathPrefix}terraform fmt "${targetPath.replace(/"/g, '')}"`, { cwd })
+          result.formatted = true
+        } catch {
+          // fmt failing (e.g. syntax error) is reported by validate below
+        }
+      }
+    }
+
+    try {
+      const { stdout } = await execAsync(`${pathPrefix}terraform validate -json`, { cwd })
+      const parsed = JSON.parse(stdout)
+      result.valid = Boolean(parsed.valid)
+      result.diagnostics = (parsed.diagnostics || []).map((d: any) => {
+        const where = d.range?.filename ? ` [${d.range.filename}:${d.range.start?.line || '?'}]` : ''
+        return `${d.severity}: ${d.summary}${d.detail ? ` — ${d.detail}` : ''}${where}`
+      })
+    } catch (e: any) {
+      // validate also exits non-zero with JSON diagnostics on stdout
+      try {
+        const parsed = JSON.parse(e.stdout || '{}')
+        result.valid = Boolean(parsed.valid)
+        result.diagnostics = (parsed.diagnostics || []).map((d: any) => {
+          const where = d.range?.filename ? ` [${d.range.filename}:${d.range.start?.line || '?'}]` : ''
+          return `${d.severity}: ${d.summary}${d.detail ? ` — ${d.detail}` : ''}${where}`
+        })
+      } catch {
+        return { success: false, error: e.stderr || e.message }
+      }
+    }
+    return { success: true, data: result }
+  })
+
+  ipcMain.handle('security:scan', async (_, cwd) => {
+    const pathPrefix = process.platform === 'darwin'
+      ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && '
+      : ''
+    try {
+      let stdout = ''
+      try {
+        ;({ stdout } = await execAsync(`${pathPrefix}tfsec . --format json --no-color`, {
+          cwd,
+          maxBuffer: 32 * 1024 * 1024
+        }))
+      } catch (e: any) {
+        // tfsec exits 1 when it finds issues but still prints JSON
+        if (e.stdout && e.stdout.trim().startsWith('{')) {
+          stdout = e.stdout
+        } else if (/not found|command not found/i.test(e.stderr || e.message)) {
+          return { success: false, error: 'tfsec is not installed. Install it with: brew install tfsec' }
+        } else {
+          throw e
+        }
+      }
+      const parsed = JSON.parse(stdout)
+      const findings = (parsed.results || []).map((r: any) => ({
+        ruleId: r.rule_id || r.long_id || 'unknown',
+        severity: r.severity || 'UNKNOWN',
+        description: r.description || r.rule_description || '',
+        resource: r.resource || '',
+        file: r.location?.filename || '',
+        line: r.location?.start_line || 0
+      }))
+      return { success: true, data: findings }
+    } catch (e: any) {
+      return { success: false, error: e.stderr || e.message }
+    }
+  })
+
   ipcMain.handle('workspace:writeFile', async (_, { cwd, filename, content }) => {
     try {
-      // The filename comes from AI output, so treat it as untrusted. Strip any
-      // leading slashes, then resolve and verify the final path stays inside
-      // the workspace (blocks absolute paths and ../ traversal).
-      const safeFilename = String(filename).replace(/^(\/|\\)+/, '')
-      const workspaceRoot = resolve(cwd)
-      const targetPath = resolve(workspaceRoot, safeFilename)
-
-      if (targetPath !== workspaceRoot && !targetPath.startsWith(workspaceRoot + sep)) {
+      // The filename comes from AI output, so treat it as untrusted.
+      const targetPath = resolveInsideWorkspace(cwd, filename)
+      if (!targetPath) {
         return { success: false, error: `Refusing to write outside the workspace: ${filename}` }
       }
 
