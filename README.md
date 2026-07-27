@@ -4,7 +4,7 @@ Terra-AI is an Electron desktop app for reviewing Terraform workspaces locally. 
 
 Everything runs on your machine. No workspace content is sent to a hosted service.
 
-<img width="1807" height="1246" alt="terra-ai-ss" src="https://github.com/user-attachments/assets/2e4ffbd4-74fd-4838-a9ef-3cc3c94363ac" />
+<img width="2044" height="1462" alt="Screenshot 2026-07-26 at 11 06 49 PM" src="https://github.com/user-attachments/assets/6f4a19cb-be06-423d-9b87-4b9f54e3be5b" />
 
 ## What It Does
 
