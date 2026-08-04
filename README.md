@@ -8,6 +8,7 @@ Everything runs on your machine. No workspace content is sent to a hosted servic
 
 ## What It Does
 
+- Scaffolds a brand-new, production-ready Terraform root module (`New Workspace`) with version pinning, provider config, a per-environment remote backend, and shared tagging — then hands off to the AI to propose the actual resources.
 - Opens a Terraform workspace from your machine.
 - Runs `terraform graph` against that workspace and converts the DOT output into a React Flow diagram.
 - Retries once with `terraform init -reconfigure` if graph generation fails on the first pass.
@@ -105,6 +106,23 @@ npm run dev
 11. If the AI returns full-file code blocks with leading filename comments, click `Review & Apply` (or `Review all changes` for multi-file responses) to inspect the diff before writing to disk. Files are formatted and validated after each write.
 
 ## Feature Reference
+
+### Starting From Scratch
+
+`New Workspace` scaffolds a production-ready Terraform root module in an empty (or confirmed non-empty) directory:
+
+1. Click `New Workspace` and choose a target folder.
+2. Fill in a project name, cloud provider (AWS, Google Cloud, or Azure), which environments you want (`dev` / `staging` / `prod`), and optionally describe the infrastructure you want built.
+3. `Create Workspace` writes the skeleton directly to disk — no AI involved for this part, since it's deterministic boilerplate:
+   - `versions.tf` — pinned Terraform and provider version constraints
+   - `providers.tf` — provider configuration wired to `local.common_tags`
+   - `backend.tf` + `environments/<env>/backend.hcl` — a partial remote backend (S3+DynamoDB, GCS, or azurerm storage) configured per environment
+   - `variables.tf` / `locals.tf` — shared inputs and a common tags/labels map
+   - `environments/<env>/terraform.tfvars` — per-environment variable values
+   - `.gitignore` and a `README.md` explaining the layout and `terraform init -backend-config=...` usage
+4. The app then loads the new workspace, and if you described what to build, automatically asks the AI to propose the actual resources (split into logical files, tagged with `local.common_tags`, following least-privilege and encryption-by-default practices). Those proposed files go through the normal `Review & Apply` diff flow like any other AI edit — nothing is written without your review.
+
+This produces a single shared root module driven by per-environment backend config and tfvars, rather than duplicated per-environment code.
 
 ### Graph Overlays
 
@@ -226,6 +244,7 @@ Notes:
 ```text
 src/main/index.ts                        Electron main process, IPC handlers, terraform/tfsec/Ollama calls
 src/main/hcl.ts                          Pure HCL parsing: block ranges, attribute extraction
+src/main/scaffold.ts                     Best-practice Terraform skeleton generator (AWS/GCP/Azure)
 src/preload/index.ts                     Preload bridge exposing safe APIs to the renderer
 src/preload/index.d.ts                   Types for the bridged API
 src/renderer/src/App.tsx                 Main React application
@@ -233,6 +252,7 @@ src/renderer/src/types.ts                Shared renderer types
 src/renderer/src/components/
   DiffModal.tsx                          Diff review + multi-file apply queue
   NodeDetailPanel.tsx                    Per-resource source, plan, cost, findings
+  ScaffoldWizard.tsx                     New Workspace scaffold form
 src/renderer/src/utils/
   dotParser.ts                           terraform graph DOT -> React Flow
   layout.ts                              Dagre auto-layout
@@ -247,6 +267,8 @@ out/                                     Built output
 | Channel | Purpose |
 | --- | --- |
 | `dialog:openDirectory` | Workspace directory picker |
+| `workspace:isEmpty` | Checks whether a chosen directory is empty before scaffolding |
+| `workspace:scaffold` | Writes the best-practice Terraform skeleton for a new workspace |
 | `terraform:graph` | `terraform graph`, with one auto-`init` retry |
 | `terraform:plan` | `terraform plan -json`, optionally `-refresh-only` for drift |
 | `terraform:validate` | `terraform fmt` on a file plus `terraform validate -json` |

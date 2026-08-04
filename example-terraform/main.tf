@@ -90,7 +90,7 @@ resource "aws_eip" "nat_ip" {
 }
 
 resource "aws_nat_gateway" "nat" {
-  count         = 2
+  count         = 20
   allocation_id = aws_eip.nat_ip[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
   tags          = { Name = "gemma-nat-gw-${count.index}" }
@@ -363,8 +363,8 @@ resource "aws_eks_node_group" "workers" {
   subnet_ids      = aws_subnet.private[*].id
   instance_types  = ["t3.medium"]
   scaling_config {
-    desired_size = 25
-    max_size     = 40
+    desired_size = 10
+    max_size     = 30
     min_size     = 2
   }
   depends_on = [
