@@ -28,8 +28,18 @@ interface SecurityFinding {
   line: number
 }
 
+type ScaffoldProvider = 'aws' | 'gcp' | 'azure'
+
 interface TerraApi {
   selectDirectory: () => Promise<string | null>
+  isWorkspaceEmpty: (cwd: string) => Promise<{ success: boolean; data?: boolean; error?: string }>
+  scaffoldWorkspace: (payload: {
+    cwd: string
+    projectName: string
+    provider: ScaffoldProvider
+    environments: string[]
+    force?: boolean
+  }) => Promise<{ success: boolean; data?: { files: string[] }; error?: string }>
   getTerraformGraph: (cwd: string) => Promise<{ success: boolean; data?: string; error?: string }>
   readWorkspaceFiles: (cwd: string) => Promise<{ success: boolean; data?: string; error?: string }>
   readWorkspaceFile: (cwd: string, filename: string) => Promise<{ success: boolean; data?: string; error?: string }>

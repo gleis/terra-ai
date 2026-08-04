@@ -15,6 +15,7 @@ import { getLayoutedElements } from './utils/layout'
 import { estimateResourceCost, type ResourceAttributes } from './utils/costEstimates'
 import DiffModal, { PendingEdit } from './components/DiffModal'
 import NodeDetailPanel from './components/NodeDetailPanel'
+import ScaffoldWizard, { ScaffoldFormValues } from './components/ScaffoldWizard'
 import type { SecurityFinding } from './types'
 
 const PLAN_BORDER: Record<string, string> = {
@@ -221,6 +222,11 @@ function App() {
   const [nodeSaving, setNodeSaving] = useState(false)
   const [nodeSaveError, setNodeSaveError] = useState<string | null>(null)
   const [resourceAttributes, setResourceAttributes] = useState<Map<string, ResourceAttributes>>(new Map())
+
+  // New Workspace scaffold wizard state
+  const [scaffoldTarget, setScaffoldTarget] = useState<{ path: string; empty: boolean } | null>(null)
+  const [scaffoldBusy, setScaffoldBusy] = useState(false)
+  const [scaffoldError, setScaffoldError] = useState<string | null>(null)
 
   useEffect(() => {
     const lastWorkspace = localStorage.getItem('terra-ai-last-workspace')
@@ -511,6 +517,54 @@ function App() {
     const path = await window.api.selectDirectory()
     if (path) {
       await loadWorkspace(path)
+    }
+  }
+
+  // "New Workspace": pick a target directory, check whether it's empty, and
+  // open the scaffold wizard. Scaffolding itself happens in createScaffold.
+  const openScaffoldWizard = async () => {
+    const path = await window.api.selectDirectory()
+    if (!path) return
+
+    setScaffoldError(null)
+    const res = await window.api.isWorkspaceEmpty(path)
+    const empty = res.success ? Boolean(res.data) : true
+    setScaffoldTarget({ path, empty })
+  }
+
+  // Write the best-practice skeleton, load the new workspace, and (if the
+  // user described what to build) kick off the normal AI review/apply flow
+  // so resources land through the same diff gate as any other AI edit.
+  const createScaffold = async (values: ScaffoldFormValues, force: boolean) => {
+    if (!scaffoldTarget) return
+    setScaffoldBusy(true)
+    setScaffoldError(null)
+    try {
+      const res = await window.api.scaffoldWorkspace({
+        cwd: scaffoldTarget.path,
+        projectName: values.projectName,
+        provider: values.provider,
+        environments: values.environments,
+        force
+      })
+      if (!res.success) {
+        setScaffoldError(res.error || 'Failed to scaffold workspace')
+        return
+      }
+
+      const scaffoldedPath = scaffoldTarget.path
+      setScaffoldTarget(null)
+      await loadWorkspace(scaffoldedPath)
+
+      if (values.description) {
+        const providerLabel = values.provider === 'gcp' ? 'Google Cloud' : values.provider === 'azure' ? 'Azure' : 'AWS'
+        const scaffoldPrompt = `Design production-ready Terraform resources for this workspace: ${values.description}\n\nTarget provider: ${providerLabel}. Environments: ${values.environments.join(', ')}. The workspace already has versions.tf, providers.tf, backend.tf, variables.tf, and locals.tf (with local.common_tags) — do not redefine those. Follow production best practices: least-privilege IAM, encryption at rest and in transit, private networking for compute and data resources, no hardcoded secrets or credentials, and every resource tagged with local.common_tags. Split resources into logical files (e.g. network.tf, compute.tf, data.tf, security.tf) rather than one large file.`
+        await submitQuery(scaffoldPrompt)
+      }
+    } catch (err: any) {
+      setScaffoldError(err.message)
+    } finally {
+      setScaffoldBusy(false)
     }
   }
 
@@ -1102,6 +1156,14 @@ function App() {
               </>
             )}
             <button
+              onClick={() => void openScaffoldWizard()}
+              disabled={loading}
+              title="Scaffold a new best-practices Terraform root module from scratch"
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              New Workspace
+            </button>
+            <button
               onClick={loadTerraform}
               disabled={loading}
               className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-md text-sm font-medium transition-colors focus:ring-2 focus:ring-indigo-500/50 disabled:opacity-50"
@@ -1197,6 +1259,20 @@ function App() {
               busy={applyBusy}
               onApply={applyReviewedEdit}
               onClose={() => setPendingEdits(null)}
+            />
+          )}
+
+          {scaffoldTarget && (
+            <ScaffoldWizard
+              targetPath={scaffoldTarget.path}
+              targetEmpty={scaffoldTarget.empty}
+              busy={scaffoldBusy}
+              error={scaffoldError}
+              onCreate={(values, force) => void createScaffold(values, force)}
+              onClose={() => {
+                setScaffoldTarget(null)
+                setScaffoldError(null)
+              }}
             />
           )}
 

@@ -11,6 +11,14 @@ interface OllamaStreamEvent {
 interface Window {
   api: {
     selectDirectory: () => Promise<string | null>
+    isWorkspaceEmpty: (cwd: string) => Promise<{ success: boolean; data?: boolean; error?: string }>
+    scaffoldWorkspace: (payload: {
+      cwd: string
+      projectName: string
+      provider: 'aws' | 'gcp' | 'azure'
+      environments: string[]
+      force?: boolean
+    }) => Promise<{ success: boolean; data?: { files: string[] }; error?: string }>
     getTerraformGraph: (cwd: string) => Promise<{ success: boolean; data?: string; error?: string }>
     readWorkspaceFiles: (cwd: string) => Promise<{ success: boolean; data?: string; error?: string }>
     readWorkspaceFile: (

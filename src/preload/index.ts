@@ -6,6 +6,14 @@ const OLLAMA_STREAM_EVENT = 'ollama:stream-event'
 // Custom APIs for renderer
 const api = {
   selectDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
+  isWorkspaceEmpty: (cwd: string) => ipcRenderer.invoke('workspace:isEmpty', cwd),
+  scaffoldWorkspace: (payload: {
+    cwd: string
+    projectName: string
+    provider: 'aws' | 'gcp' | 'azure'
+    environments: string[]
+    force?: boolean
+  }) => ipcRenderer.invoke('workspace:scaffold', payload),
   getTerraformGraph: (cwd: string) => ipcRenderer.invoke('terraform:graph', cwd),
   readWorkspaceFiles: (cwd: string) => ipcRenderer.invoke('workspace:readFiles', cwd),
   readWorkspaceFile: (cwd: string, filename: string) => ipcRenderer.invoke('workspace:readFile', { cwd, filename }),

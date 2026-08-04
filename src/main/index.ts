@@ -1,11 +1,12 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join, extname, resolve, sep } from 'path'
-import { readdir, readFile, writeFile } from 'fs/promises'
+import { join, extname, resolve, sep, dirname } from 'path'
+import { readdir, readFile, writeFile, mkdir } from 'fs/promises'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { findHclBlockRange, extractHclBlock, parseResourcesInFile } from './hcl'
+import { buildScaffoldFiles, type ScaffoldProvider } from './scaffold'
 
 const execAsync = promisify(exec)
 const OLLAMA_STREAM_EVENT = 'ollama:stream-event'
@@ -254,6 +255,63 @@ app.whenReady().then(() => {
     if (canceled) { return null }
     return filePaths[0]
   })
+
+  ipcMain.handle('workspace:isEmpty', async (_, cwd) => {
+    try {
+      const entries = await readdir(cwd, { withFileTypes: true })
+      const meaningful = entries.filter((entry) => entry.name !== '.DS_Store' && entry.name !== '.git')
+      return { success: true, data: meaningful.length === 0 }
+    } catch (e: any) {
+      // Missing directory is treated as empty — it will be created on scaffold.
+      if (e.code === 'ENOENT') return { success: true, data: true }
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle(
+    'workspace:scaffold',
+    async (
+      _,
+      {
+        cwd,
+        projectName,
+        provider,
+        environments,
+        force
+      }: { cwd: string; projectName: string; provider: ScaffoldProvider; environments: string[]; force?: boolean }
+    ) => {
+      try {
+        if (!force) {
+          let names: string[] = []
+          try {
+            names = await readdir(cwd)
+          } catch (e: any) {
+            if (e.code !== 'ENOENT') throw e
+          }
+          const meaningful = names.filter((name) => name !== '.DS_Store' && name !== '.git')
+          if (meaningful.length > 0) {
+            return { success: false, error: 'Target directory is not empty. Choose an empty folder to scaffold into.' }
+          }
+        }
+
+        await mkdir(cwd, { recursive: true })
+
+        const files = buildScaffoldFiles({ projectName, provider, environments })
+        for (const file of files) {
+          const targetPath = resolveInsideWorkspace(cwd, file.path)
+          if (!targetPath) {
+            return { success: false, error: `Refusing to write outside the workspace: ${file.path}` }
+          }
+          await mkdir(dirname(targetPath), { recursive: true })
+          await writeFile(targetPath, file.content, 'utf-8')
+        }
+
+        return { success: true, data: { files: files.map((f) => f.path) } }
+      } catch (e: any) {
+        return { success: false, error: e.message }
+      }
+    }
+  )
 
   ipcMain.handle('terraform:graph', async (_, cwd) => {
     // Ensure brew path is loaded in electron environments
