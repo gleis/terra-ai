@@ -1,5 +1,5 @@
 import { processFailure } from '../../shared/errors'
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import ReactFlow, {
   Background,
   Controls,
@@ -267,16 +267,6 @@ function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/no
   const [scaffoldBusy, setScaffoldBusy] = useState(false)
   const [scaffoldError, setScaffoldError] = useState<string | null>(null)
 
-  const didRestoreWorkspace = useRef(false)
-  useEffect(() => {
-    if (didRestoreWorkspace.current) return
-    didRestoreWorkspace.current = true
-    const lastWorkspace = localStorage.getItem('terra-ai-last-workspace')
-    if (lastWorkspace) {
-      void loadWorkspace(lastWorkspace)
-    }
-  }, [loadWorkspace])
-
   // Persist chat per workspace so conversations survive reloads
   useEffect(() => {
     if (!cwd) return
@@ -532,7 +522,7 @@ function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/no
 
   // preserveDetail keeps the node detail panel open across a same-workspace
   // reload (e.g. right after saving an inline edit).
-  async function loadWorkspace(
+  const loadWorkspace = useCallback(async function loadWorkspace(
     path: string,
     options?: { preserveDetail?: boolean }
   ): Promise<void> {
@@ -588,7 +578,17 @@ function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/no
     } finally {
       setLoading(false)
     }
-  }
+  }, [setNodes, setEdges])
+
+  const didRestoreWorkspace = useRef(false)
+  useEffect(() => {
+    if (didRestoreWorkspace.current) return
+    didRestoreWorkspace.current = true
+    const lastWorkspace = localStorage.getItem('terra-ai-last-workspace')
+    if (lastWorkspace) {
+      void loadWorkspace(lastWorkspace)
+    }
+  }, [loadWorkspace])
 
   const loadTerraform = async (): Promise<void> => {
     const path = await window.api.selectDirectory()
