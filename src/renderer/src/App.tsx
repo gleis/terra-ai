@@ -40,7 +40,7 @@ const TerraformNodeComponent = ({
     costBasis?: string
     costApproximate?: boolean
   }
-}): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element => {
+}): import('react').JSX.Element => {
   const planBorder = data.planAction ? PLAN_BORDER[data.planAction] : null
   return (
     <div
@@ -206,7 +206,7 @@ function clampWorkspaceContext(rawContext: string): string {
   return selectedSections.join('\n')
 }
 
-function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element {
+function App(): import('react').JSX.Element {
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
   const [loading, setLoading] = useState(false)
@@ -1050,15 +1050,8 @@ function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/no
     return edits
   }
 
-  const renderMessageContent = (
-    content: string
-  ): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element[] => {
-    const renderInlineContent = (
-      text: string
-    ): (
-      | string
-      | import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element
-    )[] => {
+  const renderMessageContent = (content: string): import('react').JSX.Element[] => {
+    const renderInlineContent = (text: string): (string | import('react').JSX.Element)[] => {
       const chunks = text.split(/(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|==[^=]+==)/g)
 
       return chunks.map((chunk, chunkIndex) => {
@@ -1110,12 +1103,7 @@ function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/no
       })
     }
 
-    const renderTextBlock = (
-      text: string,
-      key: string
-    ):
-      | import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element
-      | null => {
+    const renderTextBlock = (text: string, key: string): import('react').JSX.Element | null => {
       const trimmed = text.trim()
       if (!trimmed) return null
 
