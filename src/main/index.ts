@@ -1,4 +1,6 @@
+import { processFailure } from '../shared/errors'
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { scanWorkspaceSecurity } from './security-scan'
 import { join, extname, resolve, sep, dirname } from 'path'
 import { readdir, readFile, writeFile, mkdir } from 'fs/promises'
 import { exec } from 'child_process'
@@ -119,7 +121,7 @@ async function fetchOllamaModels(): Promise<string[]> {
     .filter((name): name is string => Boolean(name))
 }
 
-async function generateOllamaResponse(payload: Record<string, unknown>): Promise<any> {
+async function generateOllamaResponse(payload: Record<string, unknown>): Promise<unknown> {
   console.log(OLLAMA_DEBUG_PREFIX, 'generate:start', {
     model: payload.model,
     messageCount: Array.isArray(payload.messages) ? payload.messages.length : 0,
@@ -252,16 +254,21 @@ app.whenReady().then(() => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
       properties: ['openDirectory']
     })
-    if (canceled) { return null }
+    if (canceled) {
+      return null
+    }
     return filePaths[0]
   })
 
   ipcMain.handle('workspace:isEmpty', async (_, cwd) => {
     try {
       const entries = await readdir(cwd, { withFileTypes: true })
-      const meaningful = entries.filter((entry) => entry.name !== '.DS_Store' && entry.name !== '.git')
+      const meaningful = entries.filter(
+        (entry) => entry.name !== '.DS_Store' && entry.name !== '.git'
+      )
       return { success: true, data: meaningful.length === 0 }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       // Missing directory is treated as empty — it will be created on scaffold.
       if (e.code === 'ENOENT') return { success: true, data: true }
       return { success: false, error: e.message }
@@ -278,19 +285,29 @@ app.whenReady().then(() => {
         provider,
         environments,
         force
-      }: { cwd: string; projectName: string; provider: ScaffoldProvider; environments: string[]; force?: boolean }
+      }: {
+        cwd: string
+        projectName: string
+        provider: ScaffoldProvider
+        environments: string[]
+        force?: boolean
+      }
     ) => {
       try {
         if (!force) {
           let names: string[] = []
           try {
             names = await readdir(cwd)
-          } catch (e: any) {
+          } catch (eUnknown: unknown) {
+            const e = processFailure(eUnknown)
             if (e.code !== 'ENOENT') throw e
           }
           const meaningful = names.filter((name) => name !== '.DS_Store' && name !== '.git')
           if (meaningful.length > 0) {
-            return { success: false, error: 'Target directory is not empty. Choose an empty folder to scaffold into.' }
+            return {
+              success: false,
+              error: 'Target directory is not empty. Choose an empty folder to scaffold into.'
+            }
           }
         }
 
@@ -300,14 +317,18 @@ app.whenReady().then(() => {
         for (const file of files) {
           const targetPath = resolveInsideWorkspace(cwd, file.path)
           if (!targetPath) {
-            return { success: false, error: `Refusing to write outside the workspace: ${file.path}` }
+            return {
+              success: false,
+              error: `Refusing to write outside the workspace: ${file.path}`
+            }
           }
           await mkdir(dirname(targetPath), { recursive: true })
           await writeFile(targetPath, file.content, 'utf-8')
         }
 
         return { success: true, data: { files: files.map((f) => f.path) } }
-      } catch (e: any) {
+      } catch (eUnknown: unknown) {
+        const e = processFailure(eUnknown)
         return { success: false, error: e.message }
       }
     }
@@ -315,14 +336,14 @@ app.whenReady().then(() => {
 
   ipcMain.handle('terraform:graph', async (_, cwd) => {
     // Ensure brew path is loaded in electron environments
-    const pathPrefix = process.platform === 'darwin' 
-      ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && ' 
-      : ''
-      
+    const pathPrefix =
+      process.platform === 'darwin' ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && ' : ''
+
     try {
       const { stdout } = await execAsync(`${pathPrefix}terraform graph`, { cwd })
       return { success: true, data: stdout }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       // If terraform graph fails, it's frequently due to uninitialized modules or backends.
       // We will attempt to automatically run `terraform init -reconfigure` once and retry.
       try {
@@ -330,9 +351,13 @@ app.whenReady().then(() => {
         await execAsync(`${pathPrefix}terraform init -reconfigure`, { cwd })
         const { stdout } = await execAsync(`${pathPrefix}terraform graph`, { cwd })
         return { success: true, data: stdout }
-      } catch (retryError: any) {
+      } catch (retryErrorUnknown: unknown) {
+        const retryError = processFailure(retryErrorUnknown)
         // If it still fails, bubble up the original or retry error
-        return { success: false, error: e.message + '\n\nAuto-Init Retry Error: ' + retryError.message }
+        return {
+          success: false,
+          error: e.message + '\n\nAuto-Init Retry Error: ' + retryError.message
+        }
       }
     }
   })
@@ -347,7 +372,8 @@ app.whenReady().then(() => {
         contextStr += `\n--- ${relPath} ---\n${content}\n`
       }
       return { success: true, data: contextStr }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       return { success: false, error: e.message }
     }
   })
@@ -360,7 +386,8 @@ app.whenReady().then(() => {
       }
       const content = await readFile(targetPath, 'utf-8')
       return { success: true, data: content }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       // Missing file is a normal case (AI proposing a brand-new file)
       if (e.code === 'ENOENT') return { success: true, data: '' }
       return { success: false, error: e.message }
@@ -378,7 +405,8 @@ app.whenReady().then(() => {
         }
       }
       return { success: true, data: null }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       return { success: false, error: e.message }
     }
   })
@@ -387,7 +415,8 @@ app.whenReady().then(() => {
     try {
       const resources = await collectResourceAttributes(cwd)
       return { success: true, data: resources }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       return { success: false, error: e.message }
     }
   })
@@ -418,15 +447,15 @@ app.whenReady().then(() => {
       const updated = content.slice(0, range.start) + trimmed + content.slice(range.end)
       await writeFile(targetPath, updated, 'utf-8')
       return { success: true }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       return { success: false, error: e.message }
     }
   })
 
   ipcMain.handle('terraform:plan', async (_, { cwd, refreshOnly }) => {
-    const pathPrefix = process.platform === 'darwin'
-      ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && '
-      : ''
+    const pathPrefix =
+      process.platform === 'darwin' ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && ' : ''
     const flags = refreshOnly ? ' -refresh-only' : ''
     const cmd = `${pathPrefix}terraform plan -input=false -lock=false -no-color -json${flags}`
 
@@ -437,7 +466,7 @@ app.whenReady().then(() => {
       let stdout: string
       try {
         ;({ stdout } = await runPlan())
-      } catch (e: any) {
+      } catch {
         // terraform plan exits non-zero on errors; try an init once, then retry
         await execAsync(`${pathPrefix}terraform init -reconfigure -input=false`, { cwd })
         ;({ stdout } = await runPlan())
@@ -448,14 +477,21 @@ app.whenReady().then(() => {
       for (const line of stdout.split('\n')) {
         const trimmed = line.trim()
         if (!trimmed) continue
-        let parsed: any
+        let parsed: {
+          type?: string
+          change?: { resource?: { addr?: string }; action?: string }
+          '@message'?: string
+        }
         try {
           parsed = JSON.parse(trimmed)
         } catch {
           continue
         }
         if (parsed.type === 'planned_change' && parsed.change?.resource?.addr) {
-          changes.push({ address: parsed.change.resource.addr, action: parsed.change.action })
+          changes.push({
+            address: parsed.change.resource.addr,
+            action: parsed.change.action || 'unknown'
+          })
         }
         if (parsed.type === 'resource_drift' && parsed.change?.resource?.addr) {
           changes.push({ address: parsed.change.resource.addr, action: 'drift' })
@@ -465,15 +501,15 @@ app.whenReady().then(() => {
         }
       }
       return { success: true, data: { changes, summary } }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       return { success: false, error: e.stderr || e.message }
     }
   })
 
   ipcMain.handle('terraform:validate', async (_, { cwd, filename }) => {
-    const pathPrefix = process.platform === 'darwin'
-      ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && '
-      : ''
+    const pathPrefix =
+      process.platform === 'darwin' ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && ' : ''
     const result: { formatted: boolean; valid: boolean; diagnostics: string[] } = {
       formatted: false,
       valid: true,
@@ -496,19 +532,38 @@ app.whenReady().then(() => {
       const { stdout } = await execAsync(`${pathPrefix}terraform validate -json`, { cwd })
       const parsed = JSON.parse(stdout)
       result.valid = Boolean(parsed.valid)
-      result.diagnostics = (parsed.diagnostics || []).map((d: any) => {
-        const where = d.range?.filename ? ` [${d.range.filename}:${d.range.start?.line || '?'}]` : ''
-        return `${d.severity}: ${d.summary}${d.detail ? ` — ${d.detail}` : ''}${where}`
-      })
-    } catch (e: any) {
+      result.diagnostics = (parsed.diagnostics || []).map(
+        (d: {
+          severity?: string
+          summary?: string
+          detail?: string
+          range?: { filename?: string; start?: { line?: number } }
+        }) => {
+          const where = d.range?.filename
+            ? ` [${d.range.filename}:${d.range.start?.line || '?'}]`
+            : ''
+          return `${d.severity}: ${d.summary}${d.detail ? ` — ${d.detail}` : ''}${where}`
+        }
+      )
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       // validate also exits non-zero with JSON diagnostics on stdout
       try {
         const parsed = JSON.parse(e.stdout || '{}')
         result.valid = Boolean(parsed.valid)
-        result.diagnostics = (parsed.diagnostics || []).map((d: any) => {
-          const where = d.range?.filename ? ` [${d.range.filename}:${d.range.start?.line || '?'}]` : ''
-          return `${d.severity}: ${d.summary}${d.detail ? ` — ${d.detail}` : ''}${where}`
-        })
+        result.diagnostics = (parsed.diagnostics || []).map(
+          (d: {
+            severity?: string
+            summary?: string
+            detail?: string
+            range?: { filename?: string; start?: { line?: number } }
+          }) => {
+            const where = d.range?.filename
+              ? ` [${d.range.filename}:${d.range.start?.line || '?'}]`
+              : ''
+            return `${d.severity}: ${d.summary}${d.detail ? ` — ${d.detail}` : ''}${where}`
+          }
+        )
       } catch {
         return { success: false, error: e.stderr || e.message }
       }
@@ -516,39 +571,11 @@ app.whenReady().then(() => {
     return { success: true, data: result }
   })
 
-  ipcMain.handle('security:scan', async (_, cwd) => {
-    const pathPrefix = process.platform === 'darwin'
-      ? 'export PATH=$PATH:/opt/homebrew/bin:/usr/local/bin && '
-      : ''
+  ipcMain.handle('security:scan', async (_, cwd: string) => {
     try {
-      let stdout = ''
-      try {
-        ;({ stdout } = await execAsync(`${pathPrefix}tfsec . --format json --no-color`, {
-          cwd,
-          maxBuffer: 32 * 1024 * 1024
-        }))
-      } catch (e: any) {
-        // tfsec exits 1 when it finds issues but still prints JSON
-        if (e.stdout && e.stdout.trim().startsWith('{')) {
-          stdout = e.stdout
-        } else if (/not found|command not found/i.test(e.stderr || e.message)) {
-          return { success: false, error: 'tfsec is not installed. Install it with: brew install tfsec' }
-        } else {
-          throw e
-        }
-      }
-      const parsed = JSON.parse(stdout)
-      const findings = (parsed.results || []).map((r: any) => ({
-        ruleId: r.rule_id || r.long_id || 'unknown',
-        severity: r.severity || 'UNKNOWN',
-        description: r.description || r.rule_description || '',
-        resource: r.resource || '',
-        file: r.location?.filename || '',
-        line: r.location?.start_line || 0
-      }))
-      return { success: true, data: findings }
-    } catch (e: any) {
-      return { success: false, error: e.stderr || e.message }
+      return { success: true, data: await scanWorkspaceSecurity(cwd) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
 
@@ -562,7 +589,8 @@ app.whenReady().then(() => {
 
       await writeFile(targetPath, content, 'utf-8')
       return { success: true }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       return { success: false, error: e.message }
     }
   })
@@ -572,7 +600,8 @@ app.whenReady().then(() => {
       const { requestId, ...ollamaPayload } = payload
       await streamOllamaResponse(event.sender, requestId, ollamaPayload)
       return { success: true }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       event.sender.send(OLLAMA_STREAM_EVENT, {
         requestId: payload.requestId,
         type: 'error',
@@ -587,7 +616,8 @@ app.whenReady().then(() => {
       const models = await fetchOllamaModels()
       console.log(OLLAMA_DEBUG_PREFIX, 'models:list', models)
       return { success: true, data: models }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       console.error(OLLAMA_DEBUG_PREFIX, 'models:error', e.message)
       return { success: false, error: e.message }
     }
@@ -597,7 +627,8 @@ app.whenReady().then(() => {
     try {
       const data = await generateOllamaResponse(payload)
       return { success: true, data }
-    } catch (e: any) {
+    } catch (eUnknown: unknown) {
+      const e = processFailure(eUnknown)
       console.error(OLLAMA_DEBUG_PREFIX, 'generate:error', e.message)
       return { success: false, error: e.message }
     }

@@ -3,7 +3,10 @@
 
 // Locate the character range of the HCL block for a graph node label like
 // "aws_vpc.main", "data.aws_ami.ubuntu", or "module.network" by brace matching.
-export function findHclBlockRange(content: string, label: string): { start: number; end: number } | null {
+export function findHclBlockRange(
+  content: string,
+  label: string
+): { start: number; end: number } | null {
   let headerRegex: RegExp
   const dataMatch = label.match(/^data\.([\w-]+)\.([\w-]+)$/)
   const moduleMatch = label.match(/^module\.([\w-]+)/)
@@ -14,7 +17,10 @@ export function findHclBlockRange(content: string, label: string): { start: numb
   } else if (moduleMatch) {
     headerRegex = new RegExp(`^\\s*module\\s+"${moduleMatch[1]}"\\s*\\{`, 'm')
   } else if (resourceMatch) {
-    headerRegex = new RegExp(`^\\s*resource\\s+"${resourceMatch[1]}"\\s+"${resourceMatch[2]}"\\s*\\{`, 'm')
+    headerRegex = new RegExp(
+      `^\\s*resource\\s+"${resourceMatch[1]}"\\s+"${resourceMatch[2]}"\\s*\\{`,
+      'm'
+    )
   } else {
     return null
   }
@@ -100,7 +106,10 @@ export function parseBlockAttributes(block: string): Record<string, string> {
   if (forEach && attributes.count === undefined) {
     const literal = forEach[1]
     const items = literal.startsWith('[')
-      ? literal.slice(1, -1).split(',').filter((s) => s.trim().length > 0).length
+      ? literal
+          .slice(1, -1)
+          .split(',')
+          .filter((s) => s.trim().length > 0).length
       : literal.split('\n').filter((line) => /=/.test(line)).length
     if (items > 0) attributes.count = String(items)
   }

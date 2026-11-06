@@ -16,7 +16,12 @@ type DiffModalProps = {
 
 // Review queue for AI-proposed edits. Shows a line diff per file; the user can
 // apply or skip each file, or apply all remaining.
-export default function DiffModal({ edits, busy, onApply, onClose }: DiffModalProps): React.JSX.Element {
+export default function DiffModal({
+  edits,
+  busy,
+  onApply,
+  onClose
+}: DiffModalProps): React.JSX.Element {
   const [index, setIndex] = useState(0)
   const [applied, setApplied] = useState<Set<number>>(new Set())
 

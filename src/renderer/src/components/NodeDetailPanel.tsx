@@ -19,11 +19,26 @@ type NodeDetailPanelProps = {
 }
 
 const ACTION_LABELS: Record<string, { text: string; className: string }> = {
-  create: { text: 'will be created', className: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' },
-  update: { text: 'will be updated', className: 'text-amber-300 border-amber-500/40 bg-amber-500/10' },
-  delete: { text: 'will be destroyed', className: 'text-rose-300 border-rose-500/40 bg-rose-500/10' },
-  replace: { text: 'will be replaced', className: 'text-rose-300 border-rose-500/40 bg-rose-500/10' },
-  drift: { text: 'has drifted from config', className: 'text-fuchsia-300 border-fuchsia-500/40 bg-fuchsia-500/10' }
+  create: {
+    text: 'will be created',
+    className: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'
+  },
+  update: {
+    text: 'will be updated',
+    className: 'text-amber-300 border-amber-500/40 bg-amber-500/10'
+  },
+  delete: {
+    text: 'will be destroyed',
+    className: 'text-rose-300 border-rose-500/40 bg-rose-500/10'
+  },
+  replace: {
+    text: 'will be replaced',
+    className: 'text-rose-300 border-rose-500/40 bg-rose-500/10'
+  },
+  drift: {
+    text: 'has drifted from config',
+    className: 'text-fuchsia-300 border-fuchsia-500/40 bg-fuchsia-500/10'
+  }
 }
 
 // Slide-over panel showing the HCL source, plan status, rough cost, and
@@ -52,11 +67,12 @@ export default function NodeDetailPanel({
   const action = planAction ? ACTION_LABELS[planAction] : null
   const isDirty = editing && draft !== (snippet || '')
 
-  // Reset the editor whenever a different node is opened or the source reloads
-  useEffect(() => {
+  const [previousSource, setPreviousSource] = useState({ label, snippet })
+  if (previousSource.label !== label || previousSource.snippet !== snippet) {
+    setPreviousSource({ label, snippet })
     setEditing(false)
     setDraft(snippet || '')
-  }, [label, snippet])
+  }
 
   useEffect(() => {
     if (editing) textareaRef.current?.focus()
@@ -119,14 +135,16 @@ export default function NodeDetailPanel({
               </span>
             )}
             {action && (
-              <span className={`text-[11px] border rounded px-1.5 py-0.5 ${action.className}`}>{action.text}</span>
+              <span className={`text-[11px] border rounded px-1.5 py-0.5 ${action.className}`}>
+                {action.text}
+              </span>
             )}
             {cost !== null && (
               <span
                 className="text-[11px] text-sky-300 border border-sky-500/40 bg-sky-500/10 rounded px-1.5 py-0.5"
                 title="Rough us-east-1 on-demand approximation. Not real pricing."
               >
-                ~${cost.monthly}/mo · {cost.basis}
+                Rough ~${cost.monthly}/mo · {cost.basis}
                 {cost.approximate ? ' (uncertain)' : ''}
               </span>
             )}
@@ -171,8 +189,8 @@ export default function NodeDetailPanel({
           </pre>
         ) : (
           <p className="p-3 text-xs text-slate-500">
-            Source block not found in workspace files (it may come from a module or be generated). Editing is
-            unavailable for this node.
+            Source block not found in workspace files (it may come from a module or be generated).
+            Editing is unavailable for this node.
           </p>
         )}
 
@@ -185,10 +203,15 @@ export default function NodeDetailPanel({
         {findings.length > 0 && !editing && (
           <div className="border-t border-slate-800 p-3 space-y-2">
             {findings.map((finding, i) => (
-              <div key={i} className="rounded-lg border border-rose-500/20 bg-rose-500/5 px-2.5 py-2">
+              <div
+                key={i}
+                className="rounded-lg border border-rose-500/20 bg-rose-500/5 px-2.5 py-2"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-mono text-rose-300">{finding.ruleId}</span>
-                  <span className="text-[10px] uppercase tracking-wide text-rose-400">{finding.severity}</span>
+                  <span className="text-[10px] uppercase tracking-wide text-rose-400">
+                    {finding.severity}
+                  </span>
                 </div>
                 <p className="text-xs text-slate-300 mt-1">{finding.description}</p>
               </div>

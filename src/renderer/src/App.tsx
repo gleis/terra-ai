@@ -1,3 +1,4 @@
+import { processFailure } from '../../shared/errors'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import ReactFlow, {
   Background,
@@ -6,7 +7,7 @@ import ReactFlow, {
   Handle,
   Position,
   useNodesState,
-  useEdgesState,
+  useEdgesState
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 
@@ -27,7 +28,19 @@ const PLAN_BORDER: Record<string, string> = {
 }
 
 // Use a robust custom node to prevent text spilling on long resource names
-const TerraformNodeComponent = ({ data }: any) => {
+const TerraformNodeComponent = ({
+  data
+}: {
+  data: {
+    label: string
+    planAction?: string
+    dimmed?: boolean
+    cost: number | null
+    findingCount: number
+    costBasis?: string
+    costApproximate?: boolean
+  }
+}): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element => {
   const planBorder = data.planAction ? PLAN_BORDER[data.planAction] : null
   return (
     <div
@@ -37,7 +50,11 @@ const TerraformNodeComponent = ({ data }: any) => {
         data.dimmed ? 'opacity-20' : ''
       }`}
     >
-      <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-indigo-400 border-none" />
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="w-2 h-2 !bg-indigo-400 border-none"
+      />
       {data.label}
       {(data.cost !== null || data.findingCount > 0) && (
         <div className="mt-1.5 flex justify-center gap-1.5">
@@ -46,7 +63,7 @@ const TerraformNodeComponent = ({ data }: any) => {
               className="rounded bg-sky-500/15 px-1 py-0.5 text-[10px] text-sky-300"
               title={`Rough monthly estimate${data.costBasis ? ` — ${data.costBasis}` : ''}`}
             >
-              ~${data.cost}/mo{data.costApproximate ? '?' : ''}
+              Rough ~${data.cost}/mo{data.costApproximate ? '?' : ''}
             </span>
           )}
           {data.findingCount > 0 && (
@@ -56,13 +73,17 @@ const TerraformNodeComponent = ({ data }: any) => {
           )}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-indigo-400 border-none" />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="w-2 h-2 !bg-indigo-400 border-none"
+      />
     </div>
   )
 }
 
 const nodeTypes = {
-  terraform: TerraformNodeComponent,
+  terraform: TerraformNodeComponent
 }
 
 const MIN_SIDEBAR_WIDTH = 320
@@ -95,7 +116,14 @@ function scoreModelSpeed(modelName: string): number {
   // Known-slow variants
   if (name.includes('qwen') && name.includes('coding')) return 15
   if (name.includes('nvfp4')) return 10
-  if (name.includes('30b') || name.includes('31b') || name.includes('32b') || name.includes('34b') || name.includes('35b')) return 5
+  if (
+    name.includes('30b') ||
+    name.includes('31b') ||
+    name.includes('32b') ||
+    name.includes('34b') ||
+    name.includes('35b')
+  )
+    return 5
 
   // Score by parameter count when present
   if (name.includes('0.5b') || name.includes('1b')) return 100
@@ -138,7 +166,13 @@ function pickBackupChatModel(models: string[], currentModel: string): string | n
   return candidates[0] || null
 }
 
-function extractOllamaTextResponse(data: any): string {
+function extractOllamaTextResponse(input: unknown): string {
+  const data = input as {
+    message?: { content?: string; thinking?: string }
+    response?: string
+    content?: string
+    thinking?: string
+  } | null
   if (!data) return ''
   if (typeof data.message?.content === 'string') return data.message.content
   if (typeof data.message?.thinking === 'string') return data.message.thinking
@@ -161,7 +195,8 @@ function clampWorkspaceContext(rawContext: string): string {
     const fileHeader = headerLine.trim()
     const fullContent = contentLines.join('\n').trim()
     const trimmedContent = fullContent.slice(0, Math.min(MAX_FILE_SNIPPET_CHARS, remaining))
-    const suffix = fullContent.length > trimmedContent.length ? '\n# ... truncated for speed ...' : ''
+    const suffix =
+      fullContent.length > trimmedContent.length ? '\n# ... truncated for speed ...' : ''
     const finalSection = `${fileHeader}\n${trimmedContent}${suffix}\n`
 
     selectedSections.push(finalSection)
@@ -171,7 +206,7 @@ function clampWorkspaceContext(rawContext: string): string {
   return selectedSections.join('\n')
 }
 
-function App() {
+function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element {
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
   const [loading, setLoading] = useState(false)
@@ -180,7 +215,7 @@ function App() {
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [cwd, setCwd] = useState<string | null>(null)
-  
+
   // Future state for AI Sidebar
   const [prompt, setPrompt] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -221,19 +256,26 @@ function App() {
   } | null>(null)
   const [nodeSaving, setNodeSaving] = useState(false)
   const [nodeSaveError, setNodeSaveError] = useState<string | null>(null)
-  const [resourceAttributes, setResourceAttributes] = useState<Map<string, ResourceAttributes>>(new Map())
+  const [resourceAttributes, setResourceAttributes] = useState<Map<string, ResourceAttributes>>(
+    new Map()
+  )
 
   // New Workspace scaffold wizard state
-  const [scaffoldTarget, setScaffoldTarget] = useState<{ path: string; empty: boolean } | null>(null)
+  const [scaffoldTarget, setScaffoldTarget] = useState<{ path: string; empty: boolean } | null>(
+    null
+  )
   const [scaffoldBusy, setScaffoldBusy] = useState(false)
   const [scaffoldError, setScaffoldError] = useState<string | null>(null)
 
+  const didRestoreWorkspace = useRef(false)
   useEffect(() => {
+    if (didRestoreWorkspace.current) return
+    didRestoreWorkspace.current = true
     const lastWorkspace = localStorage.getItem('terra-ai-last-workspace')
     if (lastWorkspace) {
-      loadWorkspace(lastWorkspace)
+      void loadWorkspace(lastWorkspace)
     }
-  }, [])
+  }, [loadWorkspace])
 
   // Persist chat per workspace so conversations survive reloads
   useEffect(() => {
@@ -280,13 +322,22 @@ function App() {
           setMessages((prev) =>
             prev.map((message) =>
               message.id === event.requestId
-                ? { ...message, content: 'No response tokens were received from Ollama. Check the selected model and local Ollama logs.' }
+                ? {
+                    ...message,
+                    content:
+                      'No response tokens were received from Ollama. Check the selected model and local Ollama logs.'
+                  }
                 : message
             )
           )
         } else {
           void (async () => {
-            console.warn(OLLAMA_DEBUG_PREFIX, 'stream:empty-fallback', event.requestId, fallbackPayload)
+            console.warn(
+              OLLAMA_DEBUG_PREFIX,
+              'stream:empty-fallback',
+              event.requestId,
+              fallbackPayload
+            )
             const fallbackRes = await window.api.generateOllama(fallbackPayload)
             console.log(OLLAMA_DEBUG_PREFIX, 'fallback:response', fallbackRes)
 
@@ -295,7 +346,10 @@ function App() {
               setMessages((prev) =>
                 prev.map((message) =>
                   message.id === event.requestId
-                    ? { ...message, content: `Error: Ensure Ollama is running locally. ${fallbackRes.error || 'Fallback request failed.'}` }
+                    ? {
+                        ...message,
+                        content: `Error: Ensure Ollama is running locally. ${fallbackRes.error || 'Fallback request failed.'}`
+                      }
                     : message
                 )
               )
@@ -303,7 +357,10 @@ function App() {
             }
 
             const fallbackContent = extractOllamaTextResponse(fallbackRes.data)
-            const backupModel = pickBackupChatModel(availableModelsRef.current, String(fallbackPayload.model || ''))
+            const backupModel = pickBackupChatModel(
+              availableModelsRef.current,
+              String(fallbackPayload.model || '')
+            )
 
             if (!fallbackContent && backupModel && !fallbackRetryRef.current) {
               fallbackRetryRef.current = true
@@ -342,7 +399,9 @@ function App() {
                 message.id === event.requestId
                   ? {
                       ...message,
-                      content: fallbackContent || 'Ollama returned an empty response. Confirm the selected model can answer chat requests and that Ollama is still running.'
+                      content:
+                        fallbackContent ||
+                        'Ollama returned an empty response. Confirm the selected model can answer chat requests and that Ollama is still running.'
                     }
                   : message
               )
@@ -356,13 +415,21 @@ function App() {
         setMessages((prev) =>
           prev.map((message) =>
             message.id === event.requestId
-              ? { ...message, content: `Error: Ensure Ollama is running locally. ${event.error || 'Unknown error.'}` }
+              ? {
+                  ...message,
+                  content: `Error: Ensure Ollama is running locally. ${event.error || 'Unknown error.'}`
+                }
               : message
           )
         )
       }
 
-      if (event.type === 'done' && event.doneReason === 'length' && activeResponseContentRef.current.trim() && requestPayloadRef.current) {
+      if (
+        event.type === 'done' &&
+        event.doneReason === 'length' &&
+        activeResponseContentRef.current.trim() &&
+        requestPayloadRef.current
+      ) {
         truncatedAssistantIdsRef.current.add(event.requestId)
         void (async () => {
           let continuationBase = activeResponseContentRef.current
@@ -373,7 +440,10 @@ function App() {
               ...requestPayloadRef.current,
               stream: false,
               messages: [
-                ...((requestPayloadRef.current?.messages as Array<{ role: string; content: string }>) || []),
+                ...((requestPayloadRef.current?.messages as Array<{
+                  role: string
+                  content: string
+                }>) || []),
                 { role: 'assistant', content: continuationBase },
                 {
                   role: 'user',
@@ -435,13 +505,13 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const handleMouseMove = (event: MouseEvent) => {
+    const handleMouseMove = (event: MouseEvent): void => {
       if (!isResizingSidebar) return
       const nextWidth = window.innerWidth - event.clientX
       setSidebarWidth(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, nextWidth)))
     }
 
-    const handleMouseUp = () => {
+    const handleMouseUp = (): void => {
       setIsResizingSidebar(false)
     }
 
@@ -462,7 +532,10 @@ function App() {
 
   // preserveDetail keeps the node detail panel open across a same-workspace
   // reload (e.g. right after saving an inline edit).
-  const loadWorkspace = async (path: string, options?: { preserveDetail?: boolean }) => {
+  async function loadWorkspace(
+    path: string,
+    options?: { preserveDetail?: boolean }
+  ): Promise<void> {
     try {
       setLoading(true)
       setError(null)
@@ -473,7 +546,10 @@ function App() {
       // Parse DOT
       const { nodes: initialNodes, edges: initialEdges } = parseDotToReactFlow(res.data)
       // Auto-layout
-      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(initialNodes, initialEdges)
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+        initialNodes,
+        initialEdges
+      )
 
       setNodes(layoutedNodes)
       setEdges(layoutedEdges)
@@ -506,14 +582,15 @@ function App() {
       } catch {
         setMessages([])
       }
-    } catch (err: any) {
+    } catch (errUnknown: unknown) {
+      const err = processFailure(errUnknown)
       setError(err.message)
     } finally {
       setLoading(false)
     }
   }
 
-  const loadTerraform = async () => {
+  const loadTerraform = async (): Promise<void> => {
     const path = await window.api.selectDirectory()
     if (path) {
       await loadWorkspace(path)
@@ -522,7 +599,7 @@ function App() {
 
   // "New Workspace": pick a target directory, check whether it's empty, and
   // open the scaffold wizard. Scaffolding itself happens in createScaffold.
-  const openScaffoldWizard = async () => {
+  const openScaffoldWizard = async (): Promise<void> => {
     const path = await window.api.selectDirectory()
     if (!path) return
 
@@ -535,7 +612,7 @@ function App() {
   // Write the best-practice skeleton, load the new workspace, and (if the
   // user described what to build) kick off the normal AI review/apply flow
   // so resources land through the same diff gate as any other AI edit.
-  const createScaffold = async (values: ScaffoldFormValues, force: boolean) => {
+  const createScaffold = async (values: ScaffoldFormValues, force: boolean): Promise<void> => {
     if (!scaffoldTarget) return
     setScaffoldBusy(true)
     setScaffoldError(null)
@@ -557,11 +634,13 @@ function App() {
       await loadWorkspace(scaffoldedPath)
 
       if (values.description) {
-        const providerLabel = values.provider === 'gcp' ? 'Google Cloud' : values.provider === 'azure' ? 'Azure' : 'AWS'
+        const providerLabel =
+          values.provider === 'gcp' ? 'Google Cloud' : values.provider === 'azure' ? 'Azure' : 'AWS'
         const scaffoldPrompt = `Design production-ready Terraform resources for this workspace: ${values.description}\n\nTarget provider: ${providerLabel}. Environments: ${values.environments.join(', ')}. The workspace already has versions.tf, providers.tf, backend.tf, variables.tf, and locals.tf (with local.common_tags) — do not redefine those. Follow production best practices: least-privilege IAM, encryption at rest and in transit, private networking for compute and data resources, no hardcoded secrets or credentials, and every resource tagged with local.common_tags. Split resources into logical files (e.g. network.tf, compute.tf, data.tf, security.tf) rather than one large file.`
         await submitQuery(scaffoldPrompt)
       }
-    } catch (err: any) {
+    } catch (errUnknown: unknown) {
+      const err = processFailure(errUnknown)
       setScaffoldError(err.message)
     } finally {
       setScaffoldBusy(false)
@@ -569,7 +648,9 @@ function App() {
   }
 
   // Open the diff review modal for one or more proposed edits
-  const reviewEdits = async (edits: Array<{ filename: string; content: string }>) => {
+  const reviewEdits = async (
+    edits: Array<{ filename: string; content: string }>
+  ): Promise<void> => {
     if (!cwd) {
       setError('No workspace loaded')
       return
@@ -606,12 +687,15 @@ function App() {
           )
         }
       } else {
-        setValidationNotice(`Saved ${edit.filename} (validation unavailable: ${validation.error || 'unknown'})`)
+        setValidationNotice(
+          `Saved ${edit.filename} (validation unavailable: ${validation.error || 'unknown'})`
+        )
       }
 
       await loadWorkspace(cwd)
       return true
-    } catch (err: any) {
+    } catch (errUnknown: unknown) {
+      const err = processFailure(errUnknown)
       setError(`Failed to save file: ${err.message}`)
       return false
     } finally {
@@ -619,7 +703,7 @@ function App() {
     }
   }
 
-  const runPlan = async (refreshOnly: boolean) => {
+  const runPlan = async (refreshOnly: boolean): Promise<void> => {
     if (!cwd || planLoading) return
     setPlanLoading(refreshOnly ? 'drift' : 'plan')
     setError(null)
@@ -638,16 +722,18 @@ function App() {
           ? changeMap.size === 0
             ? 'No drift detected — state matches configuration.'
             : `Drift detected in ${changeMap.size} resource${changeMap.size > 1 ? 's' : ''}.`
-          : res.data.summary || `${changeMap.size} planned change${changeMap.size === 1 ? '' : 's'}.`
+          : res.data.summary ||
+              `${changeMap.size} planned change${changeMap.size === 1 ? '' : 's'}.`
       )
-    } catch (err: any) {
+    } catch (errUnknown: unknown) {
+      const err = processFailure(errUnknown)
       setError(`Plan failed: ${err.message}`)
     } finally {
       setPlanLoading(false)
     }
   }
 
-  const runScan = async () => {
+  const runScan = async (): Promise<void> => {
     if (!cwd || scanLoading) return
     setScanLoading(true)
     setError(null)
@@ -660,14 +746,15 @@ function App() {
           ? 'Security scan clean — no findings.'
           : `Security scan: ${res.data.length} finding${res.data.length > 1 ? 's' : ''}.`
       )
-    } catch (err: any) {
+    } catch (errUnknown: unknown) {
+      const err = processFailure(errUnknown)
       setError(`Security scan: ${err.message}`)
     } finally {
       setScanLoading(false)
     }
   }
 
-  const clearConversation = () => {
+  const clearConversation = (): void => {
     if (aiLoading) return
     if (cwd) localStorage.removeItem(`terra-ai-chat:${cwd}`)
     setMessages([])
@@ -680,7 +767,7 @@ function App() {
     activeResponseContentRef.current = ''
   }
 
-  const refreshOllamaStatus = async (): Promise<boolean> => {
+  async function refreshOllamaStatus(): Promise<boolean> {
     setOllamaStatus('checking')
     setOllamaError(null)
 
@@ -712,7 +799,7 @@ function App() {
     return true
   }
 
-  const submitQuery = async (queryText: string) => {
+  const submitQuery = async (queryText: string): Promise<void> => {
     if (!queryText.trim() || aiLoading) return
 
     const ollamaReady = await refreshOllamaStatus()
@@ -747,8 +834,10 @@ function App() {
       if (message.role !== 'assistant') return true
       return !truncatedAssistantIdsRef.current.has(message.id)
     })
-    const ollamaMessages = [...systemContext, ...safeHistoryMessages, newUserMsg].map(({ role, content }) => ({ role, content }))
-    
+    const ollamaMessages = [...systemContext, ...safeHistoryMessages, newUserMsg].map(
+      ({ role, content }) => ({ role, content })
+    )
+
     // Add optimistic UI message
     setMessages(updatedMessages)
     setPrompt('')
@@ -787,7 +876,8 @@ function App() {
         throw new Error(res.error || 'Failed to connect to Ollama')
       }
       setOllamaStatus('ready')
-    } catch (err: any) {
+    } catch (errUnknown: unknown) {
+      const err = processFailure(errUnknown)
       console.error(err)
       setOllamaStatus('offline')
       setOllamaError(err.message)
@@ -805,13 +895,13 @@ function App() {
     }
   }
 
-  const handleAskAI = async (e: React.FormEvent) => {
+  const handleAskAI = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     await submitQuery(prompt)
   }
 
   // Load (or reload) the source block for a node into the detail panel
-  const loadNodeDetail = async (label: string, showLoading = true) => {
+  const loadNodeDetail = async (label: string, showLoading = true): Promise<void> => {
     if (showLoading) {
       setDetailNode({ label, file: null, snippet: null, loading: true })
     }
@@ -832,7 +922,10 @@ function App() {
   }
 
   // Clicking a node opens the detail panel (source, plan status, cost, findings)
-  const onNodeClick = async (_: React.MouseEvent, node: any) => {
+  const onNodeClick = async (
+    _: React.MouseEvent,
+    node: import('reactflow').Node
+  ): Promise<void> => {
     setNodeSaveError(null)
     await loadNodeDetail(String(node.data.label))
   }
@@ -872,7 +965,8 @@ function App() {
       // Re-read the block so the panel shows the formatted result from disk
       await loadNodeDetail(detailNode.label, false)
       return true
-    } catch (err: any) {
+    } catch (errUnknown: unknown) {
+      const err = processFailure(errUnknown)
       setNodeSaveError(err.message)
       return false
     } finally {
@@ -880,7 +974,7 @@ function App() {
     }
   }
 
-  const explainNode = async (label: string) => {
+  const explainNode = async (label: string): Promise<void> => {
     setDetailNode(null)
     const query = `Explain what ${label} is used for in this architecture and point out any potential security or cost optimization best practices.`
     await submitQuery(query)
@@ -929,7 +1023,9 @@ function App() {
   }, [nodes, planChanges, findingsByResource, searchTerm, resourceAttributes])
 
   // Extract every filename-tagged code block from an assistant message
-  const extractEditsFromContent = (content: string): Array<{ filename: string; content: string }> => {
+  const extractEditsFromContent = (
+    content: string
+  ): Array<{ filename: string; content: string }> => {
     const edits: Array<{ filename: string; content: string }> = []
     const blocks = content.match(/```[\s\S]*?```/g) || []
     for (const block of blocks) {
@@ -944,14 +1040,24 @@ function App() {
     return edits
   }
 
-  const renderMessageContent = (content: string) => {
-    const renderInlineContent = (text: string) => {
+  const renderMessageContent = (
+    content: string
+  ): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element[] => {
+    const renderInlineContent = (
+      text: string
+    ): (
+      | string
+      | import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element
+    )[] => {
       const chunks = text.split(/(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|==[^=]+==)/g)
 
       return chunks.map((chunk, chunkIndex) => {
         if (chunk.startsWith('`') && chunk.endsWith('`')) {
           return (
-            <code key={chunkIndex} className="rounded bg-slate-950/90 px-1.5 py-0.5 font-mono text-[0.8rem] text-emerald-200 ring-1 ring-white/10 break-all [overflow-wrap:anywhere]">
+            <code
+              key={chunkIndex}
+              className="rounded bg-slate-950/90 px-1.5 py-0.5 font-mono text-[0.8rem] text-emerald-200 ring-1 ring-white/10 break-all [overflow-wrap:anywhere]"
+            >
               {chunk.slice(1, -1)}
             </code>
           )
@@ -959,7 +1065,10 @@ function App() {
 
         if (chunk.startsWith('**') && chunk.endsWith('**')) {
           return (
-            <strong key={chunkIndex} className="font-semibold text-white break-words [overflow-wrap:anywhere]">
+            <strong
+              key={chunkIndex}
+              className="font-semibold text-white break-words [overflow-wrap:anywhere]"
+            >
               {chunk.slice(2, -2)}
             </strong>
           )
@@ -967,7 +1076,10 @@ function App() {
 
         if (chunk.startsWith('__') && chunk.endsWith('__')) {
           return (
-            <span key={chunkIndex} className="font-semibold underline decoration-indigo-400 decoration-2 underline-offset-4 text-indigo-100 break-words [overflow-wrap:anywhere]">
+            <span
+              key={chunkIndex}
+              className="font-semibold underline decoration-indigo-400 decoration-2 underline-offset-4 text-indigo-100 break-words [overflow-wrap:anywhere]"
+            >
               {chunk.slice(2, -2)}
             </span>
           )
@@ -975,7 +1087,10 @@ function App() {
 
         if (chunk.startsWith('==') && chunk.endsWith('==')) {
           return (
-            <mark key={chunkIndex} className="rounded bg-amber-300/20 px-1 text-amber-100 break-words [overflow-wrap:anywhere]">
+            <mark
+              key={chunkIndex}
+              className="rounded bg-amber-300/20 px-1 text-amber-100 break-words [overflow-wrap:anywhere]"
+            >
               {chunk.slice(2, -2)}
             </mark>
           )
@@ -985,7 +1100,12 @@ function App() {
       })
     }
 
-    const renderTextBlock = (text: string, key: string) => {
+    const renderTextBlock = (
+      text: string,
+      key: string
+    ):
+      | import('/Users/gleis/projects/Projects-updates/repos/terra-ai/node_modules/@types/react/jsx-runtime').JSX.Element
+      | null => {
       const trimmed = text.trim()
       if (!trimmed) return null
 
@@ -999,11 +1119,16 @@ function App() {
             {lines.map((line, index) => {
               const cleaned = line.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, '')
               return (
-                <li key={index} className="rounded-lg border border-indigo-500/20 bg-slate-900/70 px-3 py-2 text-slate-200">
+                <li
+                  key={index}
+                  className="rounded-lg border border-indigo-500/20 bg-slate-900/70 px-3 py-2 text-slate-200"
+                >
                   <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-indigo-500/15 text-[11px] font-semibold text-indigo-200">
                     {index + 1}
                   </span>
-                  <span className="break-words [overflow-wrap:anywhere]">{renderInlineContent(cleaned)}</span>
+                  <span className="break-words [overflow-wrap:anywhere]">
+                    {renderInlineContent(cleaned)}
+                  </span>
                 </li>
               )
             })}
@@ -1013,7 +1138,10 @@ function App() {
 
       if (trimmed.startsWith('### ')) {
         return (
-          <h4 key={key} className="mt-3 mb-2 block w-full border-b border-indigo-400/60 pb-1 text-sm font-semibold uppercase tracking-[0.18em] text-indigo-200 break-words [overflow-wrap:anywhere]">
+          <h4
+            key={key}
+            className="mt-3 mb-2 block w-full border-b border-indigo-400/60 pb-1 text-sm font-semibold uppercase tracking-[0.18em] text-indigo-200 break-words [overflow-wrap:anywhere]"
+          >
             {renderInlineContent(trimmed.slice(4))}
           </h4>
         )
@@ -1021,7 +1149,10 @@ function App() {
 
       if (trimmed.startsWith('## ')) {
         return (
-          <h3 key={key} className="mt-3 mb-2 block w-full border-b border-emerald-400/60 pb-1 text-base font-semibold text-emerald-200 break-words [overflow-wrap:anywhere]">
+          <h3
+            key={key}
+            className="mt-3 mb-2 block w-full border-b border-emerald-400/60 pb-1 text-base font-semibold text-emerald-200 break-words [overflow-wrap:anywhere]"
+          >
             {renderInlineContent(trimmed.slice(3))}
           </h3>
         )
@@ -1029,7 +1160,10 @@ function App() {
 
       if (trimmed.startsWith('# ')) {
         return (
-          <h2 key={key} className="mt-3 mb-2 block w-full rounded bg-indigo-500/10 px-2 py-1 text-lg font-semibold text-white ring-1 ring-indigo-400/30 break-words [overflow-wrap:anywhere]">
+          <h2
+            key={key}
+            className="mt-3 mb-2 block w-full rounded bg-indigo-500/10 px-2 py-1 text-lg font-semibold text-white ring-1 ring-indigo-400/30 break-words [overflow-wrap:anywhere]"
+          >
             {renderInlineContent(trimmed.slice(2))}
           </h2>
         )
@@ -1038,11 +1172,16 @@ function App() {
       const labelMatch = trimmed.match(/^([A-Za-z][A-Za-z /-]{1,32}):\s*(.+)$/)
       if (labelMatch) {
         return (
-          <div key={key} className="my-2 w-full rounded-lg border border-amber-400/20 bg-amber-300/10 px-3 py-2">
+          <div
+            key={key}
+            className="my-2 w-full rounded-lg border border-amber-400/20 bg-amber-300/10 px-3 py-2"
+          >
             <span className="mr-2 font-semibold text-amber-100 underline decoration-amber-300/70 underline-offset-4 break-words [overflow-wrap:anywhere]">
               {labelMatch[1]}:
             </span>
-            <span className="text-slate-200 break-words [overflow-wrap:anywhere]">{renderInlineContent(labelMatch[2])}</span>
+            <span className="text-slate-200 break-words [overflow-wrap:anywhere]">
+              {renderInlineContent(labelMatch[2])}
+            </span>
           </div>
         )
       }
@@ -1061,7 +1200,7 @@ function App() {
         const lines = part.split('\n')
         const langInfo = lines[0] || '```'
         const code = lines.slice(1, -1).join('\n')
-        
+
         // Extract filepath from the first line only (e.g. "# main.tf"). Matching
         // anywhere in the block would pick up ordinary Terraform comments.
         const firstLine = code.split('\n', 1)[0] || ''
@@ -1069,9 +1208,14 @@ function App() {
         const codeFilePath = firstLineMatch ? firstLineMatch[1].trim() : null
 
         return (
-          <div key={index} className="my-3 rounded-xl overflow-hidden shadow-lg border border-slate-700 bg-slate-900 w-full">
+          <div
+            key={index}
+            className="my-3 rounded-xl overflow-hidden shadow-lg border border-slate-700 bg-slate-900 w-full"
+          >
             <div className="flex justify-between items-center bg-slate-950 px-3 py-2 border-b border-slate-700">
-              <span className="text-xs text-slate-400 font-mono truncate">{codeFilePath || langInfo.replace('```', '') || 'code'}</span>
+              <span className="text-xs text-slate-400 font-mono truncate">
+                {codeFilePath || langInfo.replace('```', '') || 'code'}
+              </span>
               {codeFilePath && (
                 <button
                   onClick={() => void reviewEdits([{ filename: codeFilePath, content: code }])}
@@ -1100,7 +1244,6 @@ function App() {
 
   return (
     <div className="flex h-screen w-screen bg-slate-900 border-t border-slate-800">
-      
       {/* Primary Area - React Flow */}
       <div className="flex-1 flex flex-col relative h-full">
         {/* TopBar */}
@@ -1140,7 +1283,7 @@ function App() {
                 <button
                   onClick={() => void runScan()}
                   disabled={loading || scanLoading}
-                  title="Run tfsec security scan and badge affected nodes"
+                  title="Run Trivy security scan (tfsec fallback) and badge affected nodes"
                   className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
                 >
                   {scanLoading ? 'Scanning…' : 'Scan'}
@@ -1202,7 +1345,7 @@ function App() {
               {error}
             </div>
           )}
-          
+
           {nodes.length === 0 && !loading && !error && (
             <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
               <div className="text-slate-500 text-center">
@@ -1225,10 +1368,10 @@ function App() {
           >
             <Background color="#334155" gap={16} />
             <Controls className="bg-slate-800 border-slate-700 fill-slate-300!" />
-            <MiniMap 
-              nodeColor="#475569" 
+            <MiniMap
+              nodeColor="#475569"
               maskColor="rgba(15, 23, 42, 0.7)"
-              className="bg-slate-900 border-slate-800 rounded-lg overflow-hidden shadow-2xl" 
+              className="bg-slate-900 border-slate-800 rounded-lg overflow-hidden shadow-2xl"
             />
           </ReactFlow>
 
@@ -1277,13 +1420,13 @@ function App() {
           )}
 
           {cwd && (
-             <button
-               onClick={() => setShowAddModal(true)}
-               className="absolute bottom-6 right-6 z-40 bg-indigo-600 hover:bg-indigo-500 text-white w-12 h-12 rounded-full shadow-[0_0_20px_rgba(79,70,229,0.5)] flex items-center justify-center text-3xl font-light transition-transform hover:scale-110"
-               title="Magic Add Resource"
-             >
-               +
-             </button>
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="absolute bottom-6 right-6 z-40 bg-indigo-600 hover:bg-indigo-500 text-white w-12 h-12 rounded-full shadow-[0_0_20px_rgba(79,70,229,0.5)] flex items-center justify-center text-3xl font-light transition-transform hover:scale-110"
+              title="Magic Add Resource"
+            >
+              +
+            </button>
           )}
 
           {showAddModal && (
@@ -1293,42 +1436,59 @@ function App() {
                   <h3 className="text-slate-100 font-medium flex items-center gap-2">
                     <span className="text-indigo-400">✨</span> Magic Add Resource
                   </h3>
-                  <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-200">✕</button>
+                  <button
+                    onClick={() => setShowAddModal(false)}
+                    className="text-slate-400 hover:text-slate-200"
+                  >
+                    ✕
+                  </button>
                 </div>
                 <div className="p-4 space-y-5">
                   <div>
-                    <label className="text-xs text-slate-400 mb-2 block uppercase tracking-wider font-semibold">Quick Presets</label>
+                    <label className="text-xs text-slate-400 mb-2 block uppercase tracking-wider font-semibold">
+                      Quick Presets
+                    </label>
                     <div className="flex flex-wrap gap-2">
-                      {['S3 Bucket', 'EC2 Instance', 'RDS Database', 'VPC', 'IAM Role'].map(preset => (
-                  <button 
-                          key={preset}
-                          onClick={() => {
-                            if (aiLoading) return
-                            setShowAddModal(false)
-                            submitQuery(`Create a standard AWS ${preset} block and append it to main.tf. Please generate the full main.tf file with the modification.`)
-                          }}
-                          disabled={aiLoading}
-                          className="bg-slate-800 hover:bg-indigo-500/20 hover:border-indigo-500/50 hover:text-indigo-200 border border-slate-700 text-slate-300 text-xs px-3 py-1.5 rounded-full transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {preset}
-                        </button>
-                      ))}
+                      {['S3 Bucket', 'EC2 Instance', 'RDS Database', 'VPC', 'IAM Role'].map(
+                        (preset) => (
+                          <button
+                            key={preset}
+                            onClick={() => {
+                              if (aiLoading) return
+                              setShowAddModal(false)
+                              submitQuery(
+                                `Create a standard AWS ${preset} block and append it to main.tf. Please generate the full main.tf file with the modification.`
+                              )
+                            }}
+                            disabled={aiLoading}
+                            className="bg-slate-800 hover:bg-indigo-500/20 hover:border-indigo-500/50 hover:text-indigo-200 border border-slate-700 text-slate-300 text-xs px-3 py-1.5 rounded-full transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {preset}
+                          </button>
+                        )
+                      )}
                     </div>
                   </div>
                   <div>
-                    <label className="text-xs text-slate-400 mb-2 block uppercase tracking-wider font-semibold">Custom Request</label>
-                    <form onSubmit={(e) => {
-                      e.preventDefault()
-                      if (!magicQuery.trim()) return
-                      setShowAddModal(false)
-                      submitQuery(`Create a standard ${magicQuery} block and append it to main.tf. Please generate the full main.tf file with the modification.`)
-                      setMagicQuery('')
-                    }}>
-                      <input 
+                    <label className="text-xs text-slate-400 mb-2 block uppercase tracking-wider font-semibold">
+                      Custom Request
+                    </label>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        if (!magicQuery.trim()) return
+                        setShowAddModal(false)
+                        submitQuery(
+                          `Create a standard ${magicQuery} block and append it to main.tf. Please generate the full main.tf file with the modification.`
+                        )
+                        setMagicQuery('')
+                      }}
+                    >
+                      <input
                         type="text"
                         placeholder="e.g. DynamoDB table"
                         value={magicQuery}
-                        onChange={e => setMagicQuery(e.target.value)}
+                        onChange={(e) => setMagicQuery(e.target.value)}
                         disabled={aiLoading}
                         className="w-full bg-slate-950 border border-slate-700 text-slate-200 text-sm rounded-lg px-3 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-slate-600 shadow-inner"
                         autoFocus
@@ -1370,13 +1530,9 @@ function App() {
                   Checking Ollama...
                 </div>
               ) : ollamaStatus === 'offline' ? (
-                <div className="text-xs text-amber-300">
-                  Ollama unavailable
-                </div>
+                <div className="text-xs text-amber-300">Ollama unavailable</div>
               ) : (
-                <div className="text-xs text-slate-500">
-                  Ready with {selectedModel}
-                </div>
+                <div className="text-xs text-slate-500">Ready with {selectedModel}</div>
               )}
             </div>
           </div>
@@ -1398,7 +1554,8 @@ function App() {
                 availableModels
                   .slice()
                   .sort((a, b) => {
-                    const preferredDelta = Number(isPreferredChatModel(b)) - Number(isPreferredChatModel(a))
+                    const preferredDelta =
+                      Number(isPreferredChatModel(b)) - Number(isPreferredChatModel(a))
                     if (preferredDelta !== 0) return preferredDelta
                     return scoreModelSpeed(b) - scoreModelSpeed(a)
                   })
@@ -1419,19 +1576,36 @@ function App() {
             {ollamaError}
           </div>
         )}
-        
+
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.map((m) => (
-            <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-              <span className="text-xs text-slate-500 mb-1">{m.role === 'user' ? 'You' : 'AI'}</span>
-              <div 
+            <div
+              key={m.id}
+              className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}
+            >
+              <span className="text-xs text-slate-500 mb-1">
+                {m.role === 'user' ? 'You' : 'AI'}
+              </span>
+              <div
                 className={`rounded-xl p-3 text-sm flex flex-col items-start w-full min-w-0 break-words [overflow-wrap:anywhere] shadow-inner ${
-                  m.role === 'user' 
-                    ? 'bg-indigo-600/20 border border-indigo-500/30 text-indigo-100' 
+                  m.role === 'user'
+                    ? 'bg-indigo-600/20 border border-indigo-500/30 text-indigo-100'
                     : 'bg-slate-800 border border-slate-700 text-slate-300'
                 }`}
               >
-                {m.role === 'user' ? <span className="whitespace-pre-wrap leading-7 break-words [overflow-wrap:anywhere]">{m.content}</span> : <div className="w-full min-w-0 break-words [overflow-wrap:anywhere]">{m.content ? renderMessageContent(m.content) : <span className="text-slate-500">Waiting for first tokens...</span>}</div>}
+                {m.role === 'user' ? (
+                  <span className="whitespace-pre-wrap leading-7 break-words [overflow-wrap:anywhere]">
+                    {m.content}
+                  </span>
+                ) : (
+                  <div className="w-full min-w-0 break-words [overflow-wrap:anywhere]">
+                    {m.content ? (
+                      renderMessageContent(m.content)
+                    ) : (
+                      <span className="text-slate-500">Waiting for first tokens...</span>
+                    )}
+                  </div>
+                )}
               </div>
               {m.role === 'assistant' &&
                 (() => {
@@ -1461,7 +1635,9 @@ function App() {
                 <span className="h-2 w-2 rounded-full bg-indigo-400 animate-bounce [animation-delay:-0.2s]"></span>
                 <span className="h-2 w-2 rounded-full bg-indigo-400 animate-bounce [animation-delay:-0.1s]"></span>
                 <span className="h-2 w-2 rounded-full bg-indigo-400 animate-bounce"></span>
-                <span className="ml-1 text-slate-400">Thinking through your Terraform workspace...</span>
+                <span className="ml-1 text-slate-400">
+                  Thinking through your Terraform workspace...
+                </span>
               </div>
             </div>
           )}
@@ -1469,8 +1645,8 @@ function App() {
         </div>
 
         <form onSubmit={handleAskAI} className="p-3 border-t border-white/5">
-          <input 
-            type="text" 
+          <input
+            type="text"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder={
@@ -1485,7 +1661,6 @@ function App() {
           />
         </form>
       </div>
-
     </div>
   )
 }

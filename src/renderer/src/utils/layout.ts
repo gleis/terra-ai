@@ -37,8 +37,8 @@ export const getLayoutedElements = (
       // We are shifting the dagre node position (anchor=center) to React Flow (anchor=top-left)
       position: {
         x: nodeWithPosition.x - NODE_WIDTH / 2,
-        y: nodeWithPosition.y - NODE_HEIGHT / 2,
-      },
+        y: nodeWithPosition.y - NODE_HEIGHT / 2
+      }
     }
   })
 

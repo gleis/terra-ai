@@ -1,19 +1,19 @@
-import { Node, Edge } from 'reactflow'
+import type { Node, Edge } from 'reactflow'
 
 export function parseDotToReactFlow(dotString: string): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = []
   const edges: Edge[] = []
-  
+
   // Terraform DOT lines usually look like:
   // "[root] module.my_module (expand)" [label = "module.my_module", shape = "box"]
   // "[root] module.my_module (expand)" -> "[root] aws_vpc.main (expand)"
-  
+
   // Match any node declaration with a label attribute, regardless of attribute
   // order or which other attributes are present (terraform graph output varies
   // between versions).
   const nodeRegex = /"([^"]+)"\s*\[[^\]]*label\s*=\s*"([^"]+)"[^\]]*\]/g
   const edgeRegex = /"([^"]+)"\s*->\s*"([^"]+)"/g
-  
+
   let match
   const nodeIds = new Set<string>()
 
@@ -42,20 +42,23 @@ export function parseDotToReactFlow(dotString: string): { nodes: Node[]; edges: 
       id,
       type: 'terraform',
       data: { label },
-      position: { x: 0, y: 0 },
+      position: { x: 0, y: 0 }
     })
   }
 
   // Add nodes that are only in edges but missing explicit labels (fallback fallback)
-  nodeIds.forEach(id => {
-    if (!nodes.find(n => n.id === id)) {
+  nodeIds.forEach((id) => {
+    if (!nodes.find((n) => n.id === id)) {
       // Remove generic prefixes for a cleaner label if missing
-      const cleanLabel = id.replace(/\[root\]\s*/, '').replace(/\(expand\)/, '').trim()
+      const cleanLabel = id
+        .replace(/\[root\]\s*/, '')
+        .replace(/\(expand\)/, '')
+        .trim()
       nodes.push({
         id,
         type: 'terraform',
         data: { label: cleanLabel || id },
-        position: { x: 0, y: 0 },
+        position: { x: 0, y: 0 }
       })
     }
   })

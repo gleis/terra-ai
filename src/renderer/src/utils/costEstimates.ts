@@ -175,7 +175,8 @@ export function estimateResourceCost(
   const type = resourceTypeFromLabel(label)
   if (!type) return null
 
-  const countValue = literalNumber(attributes.count) ?? literalNumber(attributes.desired_count) ?? null
+  const countValue =
+    literalNumber(attributes.count) ?? literalNumber(attributes.desired_count) ?? null
   const count = countValue !== null && countValue > 0 ? countValue : 1
   const countNote = count > 1 ? ` x${count}` : ''
   const unresolvedCount = attributes.count !== undefined && countValue === null
@@ -252,7 +253,10 @@ export function estimateResourceCost(
   // Standalone EBS volumes
   if (type === 'aws_ebs_volume') {
     const size = literalNumber(attributes.size)
-    const perGb = attributes.storage_type === 'io1' || attributes.storage_type === 'io2' ? EBS_IO_PER_GB : EBS_GP_PER_GB
+    const perGb =
+      attributes.storage_type === 'io1' || attributes.storage_type === 'io2'
+        ? EBS_IO_PER_GB
+        : EBS_GP_PER_GB
     if (size === null) return finish(8, 'unknown volume size — assumed 100GB', true)
     return finish(size * perGb, `${size}GB`, false)
   }
@@ -273,11 +277,7 @@ export function estimateResourceCost(
       )
     }
     const { hourly, known } = instanceHourly(instanceType)
-    return finish(
-      hourly * HOURS_PER_MONTH * capacity,
-      `${capacity}x ${instanceType}`,
-      !known
-    )
+    return finish(hourly * HOURS_PER_MONTH * capacity, `${capacity}x ${instanceType}`, !known)
   }
 
   // ECS services scale by desired count (already applied via `count` handling)
@@ -294,6 +294,9 @@ export function estimateResourceCost(
 }
 
 // Convenience wrapper for callers that only need the number
-export function estimateMonthlyCost(label: string, attributes: ResourceAttributes = {}): number | null {
+export function estimateMonthlyCost(
+  label: string,
+  attributes: ResourceAttributes = {}
+): number | null {
   return estimateResourceCost(label, attributes)?.monthly ?? null
 }

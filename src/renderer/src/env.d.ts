@@ -20,7 +20,9 @@ interface Window {
       force?: boolean
     }) => Promise<{ success: boolean; data?: { files: string[] }; error?: string }>
     getTerraformGraph: (cwd: string) => Promise<{ success: boolean; data?: string; error?: string }>
-    readWorkspaceFiles: (cwd: string) => Promise<{ success: boolean; data?: string; error?: string }>
+    readWorkspaceFiles: (
+      cwd: string
+    ) => Promise<{ success: boolean; data?: string; error?: string }>
     readWorkspaceFile: (
       cwd: string,
       filename: string
@@ -33,7 +35,11 @@ interface Window {
     findResource: (
       cwd: string,
       label: string
-    ) => Promise<{ success: boolean; data?: { file: string; snippet: string } | null; error?: string }>
+    ) => Promise<{
+      success: boolean
+      data?: { file: string; snippet: string } | null
+      error?: string
+    }>
     updateResource: (
       cwd: string,
       file: string,
@@ -74,8 +80,12 @@ interface Window {
       error?: string
     }>
     listOllamaModels: () => Promise<{ success: boolean; data?: string[]; error?: string }>
-    generateOllama: (payload: Record<string, unknown>) => Promise<{ success: boolean; data?: any; error?: string }>
-    streamOllama: (payload: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
+    generateOllama: (
+      payload: Record<string, unknown>
+    ) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    streamOllama: (
+      payload: Record<string, unknown>
+    ) => Promise<{ success: boolean; error?: string }>
     onOllamaStreamEvent: (callback: (event: OllamaStreamEvent) => void) => () => void
   }
 }
