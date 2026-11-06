@@ -458,7 +458,13 @@ function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/no
             appendedContent = `${appendedContent}${continuationText}`
             continuationBase = `${continuationBase}${continuationText}`
 
-            if (continuationRes.data?.done_reason !== 'length') break
+            if (
+              !continuationRes.data ||
+              typeof continuationRes.data !== 'object' ||
+              !('done_reason' in continuationRes.data) ||
+              continuationRes.data.done_reason !== 'length'
+            )
+              break
           }
 
           if (appendedContent) {
@@ -522,72 +528,76 @@ function App(): import('/Users/gleis/projects/Projects-updates/repos/terra-ai/no
 
   // preserveDetail keeps the node detail panel open across a same-workspace
   // reload (e.g. right after saving an inline edit).
-  const loadWorkspace = useCallback(async function loadWorkspace(
-    path: string,
-    options?: { preserveDetail?: boolean }
-  ): Promise<void> {
-    try {
-      setLoading(true)
-      setError(null)
-
-      const res = await window.api.getTerraformGraph(path)
-      if (!res.success || !res.data) throw new Error(res.error || 'Failed to generate graph')
-
-      // Parse DOT
-      const { nodes: initialNodes, edges: initialEdges } = parseDotToReactFlow(res.data)
-      // Auto-layout
-      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-        initialNodes,
-        initialEdges
-      )
-
-      setNodes(layoutedNodes)
-      setEdges(layoutedEdges)
-      setCwd(path)
-      localStorage.setItem('terra-ai-last-workspace', path)
-
-      // Refresh cost-relevant attributes so estimates reflect what is on disk
-      const attrRes = await window.api.getResourceAttributes(path)
-      if (attrRes.success && attrRes.data) {
-        setResourceAttributes(new Map(attrRes.data.map((r) => [r.address, r.attributes])))
-      } else {
-        setResourceAttributes(new Map())
-      }
-
-      // Plan results are stale after any reload, so always clear them.
-      setPlanChanges(new Map())
-      setPlanSummary(null)
-      setSecurityFindings([])
-      if (!options?.preserveDetail) setDetailNode(null)
-
-      // Restore persisted chat for this workspace
+  const loadWorkspace = useCallback(
+    async function loadWorkspace(
+      path: string,
+      options?: { preserveDetail?: boolean }
+    ): Promise<void> {
       try {
-        const savedChat = localStorage.getItem(`terra-ai-chat:${path}`)
-        if (savedChat) {
-          const parsed = JSON.parse(savedChat) as ChatMessage[]
-          setMessages(parsed.filter((m) => m.content && m.content.trim().length > 0))
+        setLoading(true)
+        setError(null)
+
+        const res = await window.api.getTerraformGraph(path)
+        if (!res.success || !res.data) throw new Error(res.error || 'Failed to generate graph')
+
+        // Parse DOT
+        const { nodes: initialNodes, edges: initialEdges } = parseDotToReactFlow(res.data)
+        // Auto-layout
+        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+          initialNodes,
+          initialEdges
+        )
+
+        setNodes(layoutedNodes)
+        setEdges(layoutedEdges)
+        setCwd(path)
+        localStorage.setItem('terra-ai-last-workspace', path)
+
+        // Refresh cost-relevant attributes so estimates reflect what is on disk
+        const attrRes = await window.api.getResourceAttributes(path)
+        if (attrRes.success && attrRes.data) {
+          setResourceAttributes(new Map(attrRes.data.map((r) => [r.address, r.attributes])))
         } else {
+          setResourceAttributes(new Map())
+        }
+
+        // Plan results are stale after any reload, so always clear them.
+        setPlanChanges(new Map())
+        setPlanSummary(null)
+        setSecurityFindings([])
+        if (!options?.preserveDetail) setDetailNode(null)
+
+        // Restore persisted chat for this workspace
+        try {
+          const savedChat = localStorage.getItem(`terra-ai-chat:${path}`)
+          if (savedChat) {
+            const parsed = JSON.parse(savedChat) as ChatMessage[]
+            setMessages(parsed.filter((m) => m.content && m.content.trim().length > 0))
+          } else {
+            setMessages([])
+          }
+        } catch {
           setMessages([])
         }
-      } catch {
-        setMessages([])
+      } catch (errUnknown: unknown) {
+        const err = processFailure(errUnknown)
+        setError(err.message)
+      } finally {
+        setLoading(false)
       }
-    } catch (errUnknown: unknown) {
-      const err = processFailure(errUnknown)
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }, [setNodes, setEdges])
+    },
+    [setNodes, setEdges]
+  )
 
   const didRestoreWorkspace = useRef(false)
   useEffect(() => {
     if (didRestoreWorkspace.current) return
-    didRestoreWorkspace.current = true
     const lastWorkspace = localStorage.getItem('terra-ai-last-workspace')
-    if (lastWorkspace) {
-      void loadWorkspace(lastWorkspace)
-    }
+    const timer = window.setTimeout(() => {
+      didRestoreWorkspace.current = true
+      if (lastWorkspace) void loadWorkspace(lastWorkspace)
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [loadWorkspace])
 
   const loadTerraform = async (): Promise<void> => {
